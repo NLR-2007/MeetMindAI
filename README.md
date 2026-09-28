@@ -154,12 +154,200 @@ and automatic processing do not.
 
 ---
 
-## Hindsight integration
+## 🧠 Hindsight Memory Integration
 
-Hindsight is the memory layer. MySQL remains the source of truth for structured
-records; Hindsight holds the semantic memory that makes recall work.
+### Overview
 
-**Where it plugs in.** `backend/app/services/memory.py` defines one interface:
+MeetMind AI uses **Hindsight** as its persistent AI memory layer, so the
+assistant can remember previous meetings, decisions, commitments and project
+context.
+
+Most meeting assistants summarise one conversation and stop there. MeetMind
+uses memory to improve *future* meetings by learning from earlier ones.
+
+Hindsight lets the agent:
+
+- Recall important discussions from previous meetings
+- Remember the user's commitments and responsibilities
+- Track changes in decisions and deadlines
+- Provide context-aware preparation for an upcoming meeting
+- Avoid mixing information between different projects and meetings
+
+### Two stores, two jobs
+
+MeetMind does **not** put everything in Hindsight. The two stores hold
+different kinds of thing, and each is authoritative for its own:
+
+| MySQL — structured application data | Hindsight — AI long-term memory |
+|---|---|
+| Users, roles, teams | Decisions |
+| Meetings and their status | Commitments |
+| Transcripts | Previous discussions |
+| Deadlines | Project context |
+| Tasks and action items | User preferences *(supported, not yet written)* |
+| Calendar events | |
+
+**MySQL is the source of truth.** If Hindsight is unavailable the application
+keeps working: it falls back to lexical MySQL recall and `/health` reports
+`"hindsight_integrated": false` rather than pretending otherwise.
+
+**What is written to Hindsight today:** the meeting summary, each decision,
+each action item with its owner and due date, and each deadline. Project- and
+user-scoped memory is supported by the scope model but not yet populated.
+
+### Why memory matters
+
+Information from a meeting is usually worth more than the meeting itself.
+
+**Meeting 1**
+
+> *"I will complete the backend module by Friday."*
+
+Stored as:
+
+```
+Commitment : Complete backend module
+Owner      : User
+Deadline   : Friday
+Source     : Project Alpha — Meeting 1
+```
+
+**Meeting 2**
+
+> *"The backend is delayed and needs three more days."*
+
+Hindsight lets MeetMind connect the two: the earlier commitment, the updated
+progress, the deadline change, and the project they belong to.
+
+Before the next meeting the assistant can then brief the user:
+
+```
+Previous commitment : Backend completion by Friday
+Current status      : Delayed by 3 days
+Suggested discussion: Confirm the revised deadline with stakeholders
+```
+
+The original commitment is **preserved, not overwritten** — PromiseMirror marks
+it superseded and links the replacement both ways, so the history of a promise
+survives.
+
+### Memory architecture
+
+```
+                      User meeting
+                           │
+                  Recall.ai transcript
+                           │
+                   AI processing (Groq)
+                           │
+             ┌─────────────┴─────────────┐
+             │                           │
+          MySQL                      Hindsight
+             │                           │
+     Structured data              AI memory layer
+             │                           │
+     • Meetings                  • Decisions
+     • Tasks                     • Commitments
+     • Deadlines                 • Project context
+     • Calendar                  • Previous discussions
+```
+
+### Memory scope management
+
+Scopes map to Hindsight **banks**, which is what keeps one project's knowledge
+out of another's.
+
+**Meeting memory** — bound to a single meeting (`meeting-<id>`)
+
+```
+Meeting M001
+  • Client requested a feature update
+  • Deadline changed to 15 October
+```
+
+**Project memory** — knowledge spanning the meetings of one project
+(`project-<id>`)
+
+```
+Project: Website Redesign
+  • Requirements discussion
+  • Design review
+  • Development update
+```
+
+**User memory** — private, personal improvement (`user-<id>`)
+
+```
+Previous feedback
+  • Confirm deadlines clearly
+  • Ask follow-up questions
+  • Summarise decisions before ending meetings
+```
+
+Isolation is enforced before retrieval, not filtered afterwards: a query
+against one bank cannot see another's contents.
+
+### What changes with memory
+
+```
+Without memory                 With Hindsight
+──────────────                 ──────────────
+Meeting completed              Meeting completed
+      │                              │
+Summary generated              Important information stored
+      │                              │
+Information forgotten          Future meetings retrieve context
+                                     │
+                               Better preparation and decisions
+```
+
+### Integration flow
+
+1. The user completes a meeting
+2. Recall.ai provides the transcript
+3. Groq extracts decisions, action items, deadlines and key discussions
+4. The important parts are written to Hindsight
+5. Before the next meeting, MeetMind retrieves the relevant memories
+6. The AI builds a personalised briefing from that prior knowledge
+
+### Example interaction
+
+> **User:** "Prepare me for tomorrow's Project Alpha meeting."
+
+> **MeetMind AI:**
+> **Previous discussion** — the client requested authentication changes.
+> **Your pending task** — complete the API integration.
+> **Previous commitment** — deliver testing results before the next meeting.
+>
+> **Suggested points**
+> 1. Share current progress
+> 2. Confirm the revised deadline
+> 3. Discuss remaining blockers
+
+### Benefits
+
+- ✅ Persistent AI memory across meetings
+- ✅ Context-aware meeting preparation
+- ✅ Better tracking of commitments
+- ✅ Fewer repeated explanations
+- ✅ Personalised improvement over time
+- ✅ Project-specific knowledge retrieval
+
+### Measured against the fallback
+
+Semantic recall versus the MySQL lexical fallback, on real meeting data:
+
+| Question | MySQL (lexical) | Hindsight (semantic) |
+|---|---|---|
+| "What did we agree about the database?" | returned an unrelated decision ❌ | *"User wants to keep MySQL as the database for the demo"* ✅ |
+| "Who is writing the docs?" | returned a generic summary ❌ | *"Bunny Reddy will write the project documentation, due 1 October"* ✅ |
+
+Hindsight resolves "docs" → "documentation"; word overlap cannot.
+
+### Implementation notes
+
+`backend/app/services/memory.py` defines one interface, and both backends
+implement it:
 
 ```python
 class MemoryService(abc.ABC):
@@ -167,33 +355,19 @@ class MemoryService(abc.ABC):
     def recall_memory(query, *, scope, scope_id, limit) -> list[dict]
 ```
 
-`HindsightMemoryService` implements it; `MySQLMemoryService` is the fallback.
-`get_memory_service()` is the single swap point.
+`get_memory_service()` is the single swap point between
+`HindsightMemoryService` and `MySQLMemoryService`.
 
-**Scopes map to Hindsight banks** — `meeting-<id>`, `project-<id>` — so one
-meeting's memories stay isolated exactly as they were under MySQL.
+Three details that cost real debugging time:
 
-**What gets stored:** the summary, each decision, each action item with its
-owner and due date, and each deadline.
-
-**Why recall is better than the MySQL fallback**, measured on real data:
-
-| Question | MySQL (lexical) | Hindsight (semantic) |
-|---|---|---|
-| "What did we agree about the database?" | returned the Groq decision ❌ | *"User wants to keep MySQL as the database for the demo"* ✅ |
-| "Who is writing the docs?" | returned a generic summary ❌ | *"Bunny Reddy will write the project documentation, due 1 October"* ✅ |
-
-Hindsight resolves "docs" → "documentation"; word-overlap cannot.
-
-**Three implementation details worth knowing:**
-
-1. Its sync client calls `asyncio.run()` internally, which fails inside a
-   FastAPI request. Calls run on a worker thread, and the client is built
-   *inside* that thread because its aiohttp session binds to the creating loop.
+1. The Hindsight sync client calls `asyncio.run()` internally, which fails
+   inside a FastAPI request. Calls run on a worker thread, and the client is
+   constructed *inside* that thread because its aiohttp session binds to
+   whichever event loop created it.
 2. Retains use `retain_async=True`. Fact extraction is an LLM call per memory;
-   done synchronously a single meeting took over 280 s, versus ~10 s queued.
+   synchronously a single meeting took over **280 s**, versus **~10 s** queued.
 3. Because extraction is queued, memories become searchable roughly **60 s**
-   after processing.
+   after a meeting is processed.
 
 ---
 
