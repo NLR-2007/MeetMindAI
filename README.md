@@ -1,72 +1,56 @@
 # MeetMind AI
 
-AI-powered meeting assistant. A Recall.ai bot joins your meeting, records and
-transcribes it, and Groq turns the transcript into a summary, decisions,
-action items and deadlines. You can then chat with each meeting individually.
+An AI meeting assistant that **remembers what was decided** and **helps you
+communicate better next time**.
 
-> **Recording notice.** The bot is a visible participant named
-> **MeetMind AI Notetaker**. It records and transcribes. Both the UI and the
-> API refuse to dispatch a bot unless consent is explicitly confirmed. Tell
-> every participant before joining, respect your meeting platform's rules, and
-> follow the recording consent laws that apply to you.
+A bot joins your meeting, transcribes it live, and extracts the decisions,
+owners and deadlines. Those commitments then persist across every meeting that
+follows — so the promise you made three meetings ago still surfaces when it
+matters.
 
-## Status
+> **Recording notice.** The bot joins as a visible participant named
+> **MeetMind AI Notetaker**. Both the UI and the API refuse to dispatch it
+> unless consent is explicitly confirmed. Tell every participant beforehand,
+> respect your meeting platform's rules, and follow the recording consent laws
+> that apply to you.
 
-| Milestone | State |
+---
+
+## What works
+
+Everything below has been verified end to end against live services, not mocks.
+
+| Capability | Status |
 |---|---|
-| 1. Project setup, bot joins Google Meet | ✅ verified live |
-| 2. MySQL + SQLAlchemy models | ✅ 10 tables created |
-| 3. Transcript retrieval + webhooks | ✅ transcript verified live; webhook needs a secret |
-| 4. Groq summary / decisions / action items | ✅ verified on a real transcript |
-| 5. Next.js dashboard | ✅ builds and renders |
-| 6. Meeting-scoped chat + MemoryService | ✅ verified live |
-| 7. Calendar-based scheduling | ✅ built; needs a live Google connect to verify |
-| 8. Whisper fallback | ✅ wired and tested |
-| 9. Hindsight persistent memory | ❌ **not integrated** |
+| Bot joins Google Meet / Zoom / Teams | ✅ |
+| **Live transcript during the call** | ✅ streams via signed webhooks |
+| Post-meeting summary, decisions, action items, deadlines | ✅ |
+| **Hindsight persistent memory** | ✅ survives application restarts |
+| PromiseMirror — commitments tracked across meetings | ✅ |
+| Mark Up — pre-meeting briefing and AI practice | ✅ |
+| **Live Assist** — drafts an answer when you are asked a question | ✅ |
+| Personal coaching, scoped to your own words | ✅ |
+| Manager / employee roles with read-only team view | ✅ |
+| Google Calendar — deadlines pushed as events | ✅ |
+| Whisper fallback when Recall produces no transcript | ⚠️ tested with mocks only |
+
+**82 backend tests pass.** TypeScript and the production build are clean.
+
+---
 
 ## Tech stack
 
-Next.js 16 + TypeScript + Tailwind 4 (frontend) · FastAPI (backend) · MySQL ·
-Recall.ai (bot + transcripts) · Groq (LLM + Whisper fallback) · Hindsight (later)
+Next.js 16 · TypeScript · Tailwind 4 · FastAPI · MySQL/MariaDB ·
+Recall.ai (bot + transcripts) · Groq (summaries, Whisper) ·
+**Hindsight** (agent memory) · NVIDIA NIM (LLM behind Hindsight) ·
+Google Calendar API
 
-## Layout
+---
 
-```
-.
-├── .env                      # real secrets — gitignored, never commit
-├── .env.example              # template
-├── backend/
-│   ├── app/
-│   │   ├── main.py           # FastAPI app, CORS, lifespan, /health
-│   │   ├── config.py         # env loading + validation
-│   │   ├── db.py             # SQLAlchemy engine/session
-│   │   ├── models.py         # users, projects, meetings, participants,
-│   │   │                     # transcripts, summaries, action_items,
-│   │   │                     # deadlines, chat_messages, memories
-│   │   ├── schemas.py        # request/response models, URL validation
-│   │   ├── routers/
-│   │   │   ├── meetings.py   # join / status / detail / process / leave
-│   │   │   ├── chat.py       # meeting-scoped chat
-│   │   │   └── webhooks.py   # Recall webhooks + signature verification
-│   │   └── services/
-│   │       ├── recall.py         # Recall.ai REST client
-│   │       ├── transcripts.py    # transcript download + normalisation
-│   │       ├── groq_client.py    # analysis, chat, Whisper fallback
-│   │       ├── meeting_service.py# orchestration
-│   │       └── memory.py         # MemoryService (MySQL today, Hindsight later)
-│   ├── tests/
-│   └── requirements.txt
-└── frontend/
-    ├── app/
-    │   ├── page.tsx                  # dashboard: join form + history
-    │   └── meetings/[id]/page.tsx    # detail: summary, items, transcript, chat
-    ├── components/
-    └── lib/api.ts                    # typed API client
-```
+## Setup (Windows)
 
-## Setup (Windows + VS Code)
-
-Open a **PowerShell** terminal in VS Code (`` Ctrl+` ``) at the repo root.
+You need **four** things running: MySQL, Hindsight, the backend, the frontend —
+started in that order.
 
 ### 1. Secrets
 
@@ -74,50 +58,75 @@ Open a **PowerShell** terminal in VS Code (`` Ctrl+` ``) at the repo root.
 Copy-Item .env.example .env
 ```
 
-Fill in `.env`:
+Fill in `.env`. At minimum: `RECALL_API_KEY`, `GROQ_API_KEY`, `DATABASE_URL`,
+`HINDSIGHT_LLM_API_KEY`.
 
-```
-RECALL_API_KEY=your_actual_api_key
-RECALL_REGION=us-west-2
-GROQ_API_KEY=your_groq_api_key
-DATABASE_URL=mysql+pymysql://root:@127.0.0.1:3306/meetmind?charset=utf8mb4
-```
-
-`RECALL_REGION` must match the region the key was created in — each Recall
+`RECALL_REGION` must match the region your Recall key was created in — each
 region is a separate deployment with separate credentials.
 
-### 2. MySQL (XAMPP)
+### 2. MySQL
 
-Start **MySQL** from the XAMPP Control Panel, then create the database:
+Start **MySQL** in XAMPP, then create the database:
 
 ```powershell
 & "C:\xampp\mysql\bin\mysql.exe" -u root -e "CREATE DATABASE IF NOT EXISTS meetmind CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 ```
 
-Tables are created automatically on backend startup.
-
-### 3. Backend
+### 3. Backend dependencies
 
 ```powershell
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
-If PowerShell blocks activation:
+This pulls torch and transformers for Hindsight's local embedding and reranker
+models — roughly **1.7 GB**, and slow the first time.
+
+Then run the migrations, in order:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\python.exe migrations\001_auth_and_ownership.py
+.\.venv\Scripts\python.exe migrations\002_markup_promisemirror.py
+.\.venv\Scripts\python.exe migrations\003_roles_and_assignment.py
+.\.venv\Scripts\python.exe migrations\004_speaker_scoped_coaching.py
 ```
 
-- Health: http://127.0.0.1:8000/health
-- API docs: http://127.0.0.1:8000/docs
+They are idempotent and safe to re-run.
 
-### 4. Frontend
+### 4. Hindsight — start this BEFORE the backend
 
-In a second terminal:
+Hindsight runs as its own long-lived server. In a dedicated terminal:
+
+```powershell
+$env:PYTHONIOENCODING = "utf-8"        # its banner is Unicode; cp1252 crashes it
+$env:HINDSIGHT_API_LLM_PROVIDER = "openai"
+$env:HINDSIGHT_API_LLM_MODEL = "openai/gpt-oss-20b"
+$env:HINDSIGHT_API_LLM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+$env:HINDSIGHT_API_LLM_API_KEY = "<your NVIDIA NIM key>"
+$env:HINDSIGHT_API_PORT = "8888"
+$env:HINDSIGHT_API_MODEL_INIT_TIMEOUT = "900"
+D:\MicroSoft_Hackthon\backend\.venv\Scripts\hindsight-api.exe
+```
+
+Wait for `http://127.0.0.1:8888/health` to return 200. The first start loads
+models and can take a few minutes; later starts are quicker.
+
+**Leave this terminal open.** If Hindsight is down the backend still runs — it
+falls back to MySQL memory and `/health` reports
+`"hindsight_integrated": false` rather than pretending.
+
+### 5. Backend
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8001 --reload
+```
+
+Check <http://127.0.0.1:8001/health> shows `"hindsight_integrated": true`.
+
+### 6. Frontend
 
 ```powershell
 cd frontend
@@ -125,153 +134,147 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000
+Open <http://localhost:3000>. Point it at the backend with
+`NEXT_PUBLIC_API_BASE` in `frontend/.env.local` if you change the port.
 
-### 5. Tests
+### 7. Webhooks (optional, but needed for live transcript)
+
+Recall must reach your machine:
 
 ```powershell
-cd backend
-.\.venv\Scripts\python.exe -m pytest -q
+ngrok http 8001
 ```
 
-Tests run against throwaway SQLite and mock every Recall/Groq call, so they
-never spend bot minutes or tokens.
+Put the HTTPS URL in `.env` as `PUBLIC_BASE_URL`, and register
+`<PUBLIC_BASE_URL>/webhooks/recall` in the Recall webhooks dashboard,
+subscribed to `bot.done`.
+
+Without this, transcripts still arrive **after** the meeting; live streaming
+and automatic processing do not.
+
+---
+
+## Hindsight integration
+
+Hindsight is the memory layer. MySQL remains the source of truth for structured
+records; Hindsight holds the semantic memory that makes recall work.
+
+**Where it plugs in.** `backend/app/services/memory.py` defines one interface:
+
+```python
+class MemoryService(abc.ABC):
+    def save_memory(content, *, scope, scope_id, metadata) -> str
+    def recall_memory(query, *, scope, scope_id, limit) -> list[dict]
+```
+
+`HindsightMemoryService` implements it; `MySQLMemoryService` is the fallback.
+`get_memory_service()` is the single swap point.
+
+**Scopes map to Hindsight banks** — `meeting-<id>`, `project-<id>` — so one
+meeting's memories stay isolated exactly as they were under MySQL.
+
+**What gets stored:** the summary, each decision, each action item with its
+owner and due date, and each deadline.
+
+**Why recall is better than the MySQL fallback**, measured on real data:
+
+| Question | MySQL (lexical) | Hindsight (semantic) |
+|---|---|---|
+| "What did we agree about the database?" | returned the Groq decision ❌ | *"User wants to keep MySQL as the database for the demo"* ✅ |
+| "Who is writing the docs?" | returned a generic summary ❌ | *"Bunny Reddy will write the project documentation, due 1 October"* ✅ |
+
+Hindsight resolves "docs" → "documentation"; word-overlap cannot.
+
+**Three implementation details worth knowing:**
+
+1. Its sync client calls `asyncio.run()` internally, which fails inside a
+   FastAPI request. Calls run on a worker thread, and the client is built
+   *inside* that thread because its aiohttp session binds to the creating loop.
+2. Retains use `retain_async=True`. Fact extraction is an LLM call per memory;
+   done synchronously a single meeting took over 280 s, versus ~10 s queued.
+3. Because extraction is queued, memories become searchable roughly **60 s**
+   after processing.
+
+---
 
 ## Using it
 
-1. Open the dashboard, paste a meeting link, tick the consent checkbox, click
-   **Join meeting**.
-2. Admit **MeetMind AI Notetaker** from the waiting room.
-3. Status moves `joining_call → in_waiting_room → in_call_recording`.
-4. When the meeting ends, open it and click **Get transcript & summary**.
-5. Ask questions in the per-meeting chat panel.
+1. Sign in, paste a meeting link, tick the consent box, **Join meeting**
+2. Admit **MeetMind AI Notetaker** from the waiting room
+3. Watch the transcript appear live on the meeting page
+4. Leave the meeting — with webhooks configured it processes itself
+5. **Mark Up → Review** compares what you planned with what you said
+6. **My Promises** shows commitments, including deadlines that moved
+
+---
+
+## Roles
+
+| Role | Sees |
+|---|---|
+| **Employee** | only their own meetings, promises, progress and coaching |
+| **Manager** | the same, plus **About My Team** — read-only |
+
+A manager **cannot** mark a report's task complete: once a commitment is
+assigned, only the assignee may close it. Recording a meeting does not make its
+promises yours.
+
+Employees supply their manager's email at registration; that is what scopes
+name-matching, so a "Bunny" in another team can never be matched.
+
+---
 
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/health` | Liveness + redacted config view |
-| `POST` | `/meetings/join` | Dispatch the notetaker bot |
-| `GET` | `/meetings` | Meeting history |
-| `GET` | `/meetings/{id}` | Full detail (`?include_transcript=true`) |
-| `GET` | `/meetings/{id}/status` | Live status from Recall |
-| `POST` | `/meetings/{id}/process` | Fetch transcript + run Groq analysis |
-| `POST` | `/meetings/{id}/leave` | Remove the bot from the call |
-| `GET` | `/meetings/{id}/chat` | Chat history for that meeting |
-| `POST` | `/meetings/{id}/chat` | Ask about that meeting |
-| `POST` | `/webhooks/recall` | Status/completion events (signature verified) |
-| `POST` | `/webhooks/recall/realtime` | Per-bot real-time transcript events |
+| `POST` | `/auth/register`, `/auth/login` | Accounts and JWTs |
+| `GET` | `/auth/me`, `/auth/team` | Profile, visible team |
+| `POST` | `/meetings/join` | Dispatch the notetaker |
+| `GET` | `/meetings`, `/meetings/{id}` | History and detail |
+| `POST` | `/meetings/{id}/process` | Transcript + Groq analysis |
+| `POST` | `/meetings/{id}/chat` | Ask about one meeting |
+| `POST` | `/webhooks/recall` | Status events (Svix-signed) |
+| `POST` | `/webhooks/recall/realtime` | Live transcript chunks |
+| `GET` | `/promisemirror/findings`, `/timeline` | Commitment intelligence |
+| `POST` | `/markup/prepare/existing`, `/new` | Build a briefing |
+| `POST` | `/markup/plans/{id}/practice` | AI rehearsal |
+| `GET` | `/markup/plans/{id}/live-assist` | Live Assist state |
+| `POST` | `/coach/{meeting_id}/review` | Speaker-scoped coaching |
+| `GET` | `/progress`, `/team/overview` | Dashboards |
 
-`POST /meetings/join` body:
+---
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `meeting_url` | string | yes | Google Meet, Zoom or Teams link |
-| `consent_acknowledged` | bool | yes | Must be `true` |
-| `title` | string | no | Shown in the dashboard |
-| `bot_name` | string | no | Defaults to `MeetMind AI Notetaker` |
-| `transcription` | bool | no | Defaults to `true` |
+## Design decisions
 
-## Webhooks
+**Refuse rather than guess.** An ambiguous speaker name leaves a commitment
+unassigned. Coaching is refused outright if you cannot be found in the
+transcript, rather than reviewing someone else's words as yours.
 
-Recall signs webhooks with HMAC via Svix. Verification needs a **workspace
-secret**:
+**Verify in code, not only in prompts.** Coaching quotes are checked against
+the user's own transcript lines; a suggestion quoting another speaker is
+discarded even if the model produced it.
 
-1. Recall dashboard → **Developers → API Keys & Secrets → Create Workspace Secret**
-2. Put it in `.env` as `RECALL_WEBHOOK_SECRET=whsec_...`
+**404, not 403,** for another user's resources — confirming something exists is
+itself a disclosure.
 
-Until that is set, `/webhooks/recall` returns **401 by design** — the app will
-not trust unsigned payloads. For local testing only you may set
-`ALLOW_UNVERIFIED_WEBHOOKS=true`.
+**Date arithmetic is deterministic.** The LLM was unreliable at it, so spoken
+dates resolve in Python against the meeting date. "3rd of October" → `2026-10-03`.
 
-Recall must reach your machine, so expose the backend with a tunnel:
+**Transcription language is pinned to `en`.** Recall's `auto` detection flipped
+to Hindi mid-meeting on accented English and emitted Devanagari.
 
-```powershell
-ngrok http 8000
-```
+---
 
-Set `PUBLIC_BASE_URL` to the HTTPS URL ngrok prints, and register
-`<PUBLIC_BASE_URL>/webhooks/recall` in the Recall webhooks dashboard.
+## Known limitations
 
-## Recall.ai reference
-
-Verified against the official docs and live responses, not inferred:
-
-- Regions / base URLs — https://docs.recall.ai/docs/regions
-- Create Bot — https://docs.recall.ai/reference/bot_create
-- Transcription config — https://docs.recall.ai/docs/transcription
-- Webhook verification — https://docs.recall.ai/docs/authenticating-requests-from-recallai
-- Calendar integration — https://docs.recall.ai/docs/calendar-integration
-
-Auth is `Authorization: Token <RECALL_API_KEY>` — **not** `Bearer`.
-
-The transcript download URL is a pre-signed S3 link at
-`recordings[].media_shortcuts.transcript.data.download_url`. It needs no auth
-header and it expires, so it is never persisted.
-
-## Implementation notes
-
-- **Groq reasoning models.** The default `openai/gpt-oss-120b` returns a
-  `reasoning` field alongside `content`, and both draw from `max_tokens`. Too
-  small a budget yields empty `content`. `GROQ_MAX_TOKENS` defaults to 4096.
-  This account has no Llama chat models available; `whisper-large-v3` is
-  present and is the Whisper fallback.
-- **Chat context.** Every answer is built from one meeting only. Naming a
-  different stored meeting returns `context_switch_required` instead of
-  silently switching.
-- **Secrets never reach the browser.** The frontend only knows
-  `NEXT_PUBLIC_API_BASE`. All Recall and Groq calls happen server-side.
-- **Hindsight is not integrated.** `MemoryService` in
-  `backend/app/services/memory.py` defines `save_memory()` / `recall_memory()`,
-  and `MySQLMemoryService` is the current implementation with MySQL as
-  temporary storage. Recall there is lexical, not semantic. When Hindsight
-  works, add a `HindsightMemoryService` with the same interface and change the
-  factory — no chat or meeting code needs to change. `/health` reports
-  `"hindsight_integrated": false` until that is true.
-
-## Calendar scheduling
-
-Uses **Recall Calendar V2** (app-managed scheduling: Recall syncs the calendar,
-MeetMind decides which events get a bot).
-
-Before connecting, in Google Cloud Console:
-
-1. **APIs & Services → Library** → enable **Google Calendar API**
-2. **APIs & Services → Credentials** → your OAuth client → add the redirect URI
-   `http://localhost:8000/calendar/oauth/callback`
-3. If the consent screen is in *Testing*, add your Google account under
-   **Audience → Test users**
-
-Then open http://localhost:3000/calendar and click **Connect Google Calendar**.
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/calendar/oauth/start` | Google consent URL |
-| `GET` | `/calendar/oauth/callback` | OAuth redirect target |
-| `GET` | `/calendar` | Connected calendars |
-| `GET` | `/calendar/{id}/events` | Upcoming events (`?days_ahead=`) |
-| `POST` | `/calendar/events/{id}/schedule` | Schedule the notetaker |
-| `DELETE` | `/calendar/events/{id}/schedule` | Cancel it |
-
-Scopes requested are **read-only** (`calendar.events.readonly`). The Google
-refresh token is handed to Recall and is **not** stored in MySQL; only Recall's
-calendar id is.
-
-## Speech-to-text: two paths
-
-Recall's `recallai_streaming` provider is the primary source and gives text
-**with speaker attribution and word timestamps**. Whisper is a fallback for the
-case where Recall produced no transcript at all — transcription disabled on the
-bot, or the provider failed — but audio was still recorded. It downloads
-`audio_mixed` and sends it to Groq `whisper-large-v3`.
-
-The fallback returns **plain text only**: no speaker names, no per-word
-timings, so no participant rows are created. The response field
-`used_whisper_fallback` tells you which path ran.
-
-## Not built yet
-
-- Authentication: `users` and `projects` tables exist but nothing writes to
-  them; all meetings are currently unowned
-- Auto-record: the `calendars.auto_record` column exists but no job acts on it,
-  so events are scheduled manually
+- **Speech-to-text mangles product names and Indian names** — "Hindsight" →
+  "Insight", "Bunny" → "Pani". The mechanism is right; the transcription is not.
+- **Speaker identity comes from the meeting platform's display name**, not
+  voice. If your Meet name differs from your MeetMind aliases, attribution
+  fails — deliberately, rather than guessing.
+- **Whisper fallback is untested on real audio.** Recall's transcript has
+  always succeeded, so that path has only ever run against mocks.
+- **Live Assist is heuristic.** It detects questions by sentence shape and
+  addressee by name, so an unaddressed question may still prompt an answer.
+- **Free ngrok URLs change on restart**, breaking webhooks until re-registered.
