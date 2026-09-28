@@ -1,0 +1,25 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+httpx==0.28.1
+python-dotenv==1.0.1
+# Required by deadline date resolution (services/meeting_service.resolve_due_date)
+python-dateutil==2.9.0.post0
+
+# Database
+SQLAlchemy==2.0.36
+PyMySQL==1.1.1
+cryptography==44.0.0
+
+# Webhook signature verification
+svix==1.42.0
+
+# Persistent agent memory (embedded server; pulls torch + transformers, ~1.5GB).
+# Omit this line to run with MEMORY_BACKEND=mysql only.
+hindsight-all==0.10.1
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
+respx==0.22.0

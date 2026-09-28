@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.local
+*.env.local
+
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node / Next
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+
+# Misc
+bot.json
+*.log
+
+# Build leftovers and local tooling
+.next_old_*/
+.next_stale_*/
+frontend/tsconfig.tsbuildinfo
+*.ngrok*
