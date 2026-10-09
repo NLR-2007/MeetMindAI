@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.deps import current_user, owned_meeting
+from app.deps import current_user, readable_meeting
 from app.models import ChatMessage, Meeting, User
-from app.schemas import ChatMessageOut, ChatRequest, ChatResponse
+from app.schemas import ChatMessageOut, ChatRequest, ChatResponse, RecalledMemory
 from app.services import meeting_service
 from app.services.groq_client import GroqClient, GroqError
 from app.services.memory import get_memory_service
@@ -29,7 +29,7 @@ HISTORY_TURNS = 8
 
 @router.get("", response_model=list[ChatMessageOut])
 async def chat_history(
-    meeting: Meeting = Depends(owned_meeting),
+    meeting: Meeting = Depends(readable_meeting),
     db: Session = Depends(get_db),
 ) -> list[ChatMessageOut]:
     meeting_id = meeting.id
@@ -44,7 +44,7 @@ async def chat_history(
 @router.post("", response_model=ChatResponse)
 async def chat(
     payload: ChatRequest,
-    meeting: Meeting = Depends(owned_meeting),
+    meeting: Meeting = Depends(readable_meeting),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     user: User = Depends(current_user),
@@ -116,7 +116,16 @@ async def chat(
     db.add(ChatMessage(meeting_id=meeting_id, role="assistant", content=answer))
     db.flush()
 
-    return ChatResponse(meeting_id=meeting_id, answer=answer, tokens_used=tokens)
+    return ChatResponse(
+        meeting_id=meeting_id,
+        answer=answer,
+        tokens_used=tokens,
+        memory_backend=getattr(memory, "backend_name", "mysql"),
+        recalled_memories=[
+            RecalledMemory(content=m["content"], created_at=m.get("created_at"))
+            for m in recalled
+        ],
+    )
 
 
 def _referenced_other_meeting(db: Session, message: str, current_id: str, owner_id: str):

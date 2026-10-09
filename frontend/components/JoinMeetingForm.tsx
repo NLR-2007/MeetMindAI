@@ -1,12 +1,30 @@
 "use client";
 
-import { useState } from "react";
-import { api, ApiError, type Meeting } from "@/lib/api";
+import { useEffect, useState } from "react";
+import {
+  api,
+  ApiError,
+  projectApi,
+  teamApi,
+  type Meeting,
+  type ProjectSummary,
+  type TeamSummary,
+} from "@/lib/api";
 import { ErrorBanner, Spinner } from "./ui";
+
+const field =
+  "w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20";
+
+// Sentinel for the "create one instead" row, so it cannot collide with an id.
+const NEW_PROJECT = "__new__";
 
 /**
  * Recording consent is enforced twice: this checkbox, and a hard validator on
  * the backend. The UI gate is a courtesy; the backend gate is the guarantee.
+ *
+ * Choosing a project here is what makes a meeting series accumulate: pick the
+ * same project next time and Mark Up, PromiseMirror and memory all read the
+ * earlier meetings as context for this one.
  */
 export function JoinMeetingForm({ onJoined }: { onJoined: (m: Meeting) => void }) {
   const [url, setUrl] = useState("");
@@ -15,7 +33,39 @@ export function JoinMeetingForm({ onJoined }: { onJoined: (m: Meeting) => void }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canSubmit = url.trim().length > 0 && consent && !busy;
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  // "" = no project, NEW_PROJECT = creating one, otherwise a project id.
+  const [projectId, setProjectId] = useState("");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [teams, setTeams] = useState<TeamSummary[]>([]);
+  const [teamId, setTeamId] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [rows, teamRows] = await Promise.all([
+        projectApi.list().catch(() => [] as ProjectSummary[]),
+        teamApi.list().catch(() => [] as TeamSummary[]),
+      ]);
+      if (cancelled) return;
+      setProjects(rows);
+      setTeams(teamRows);
+      setProjectsLoaded(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const creatingProject = projectId === NEW_PROJECT;
+  // Every meeting belongs to a project and carries a title: that is what makes
+  // a series accumulate, and what stops history reading as a list of URLs.
+  const projectChosen = creatingProject
+    ? newProjectName.trim().length > 0
+    : projectId.length > 0;
+  const canSubmit =
+    url.trim().length > 0 && title.trim().length > 0 && projectChosen && consent && !busy;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -23,14 +73,29 @@ export function JoinMeetingForm({ onJoined }: { onJoined: (m: Meeting) => void }
     setBusy(true);
     setError(null);
     try {
+      // A new project is created first, so the meeting can be filed under it
+      // in the same action rather than making the user visit another page.
+      let chosen = projectId;
+      if (creatingProject) {
+        const created = await projectApi.create(newProjectName.trim());
+        setProjects((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+        chosen = created.id;
+      }
+
       const meeting = await api.joinMeeting({
         meeting_url: url.trim(),
-        title: title.trim() || undefined,
+        title: title.trim(),
         consent_acknowledged: true,
+        project_id: chosen,
+        team_id: teamId || undefined,
       });
+
       setUrl("");
       setTitle("");
       setConsent(false);
+      setNewProjectName("");
+      // Keep the project selected: the next meeting is usually the same one.
+      setProjectId(chosen);
       onJoined(meeting);
     } catch (err) {
       setError(
@@ -43,11 +108,76 @@ export function JoinMeetingForm({ onJoined }: { onJoined: (m: Meeting) => void }
 
   return (
     <form onSubmit={submit} className="space-y-4">
+      {teams.length > 0 && (
+        <div>
+          <label htmlFor="meeting-team" className="mb-1.5 block text-sm font-medium">
+            Record for{" "}
+            <span className="font-normal text-[var(--muted)]">(optional)</span>
+          </label>
+          <select
+            id="meeting-team"
+            value={teamId}
+            onChange={(e) => setTeamId(e.target.value)}
+            className={field}
+          >
+            <option value="">Just me</option>
+            {teams.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-xs text-[var(--muted)]">
+            {teamId
+              ? "One bot covers the whole team. If a colleague has already sent one to this link, you will join their recording instead of adding a second bot."
+              : "Recording for a team means one bot for everyone, not one each."}
+          </p>
+        </div>
+      )}
+
       <div>
-        <label
-          htmlFor="meeting-url"
-          className="mb-1.5 block text-sm font-medium"
+        <label htmlFor="meeting-project" className="mb-1.5 block text-sm font-medium">
+          Project <span className="text-[var(--danger)]">*</span>
+        </label>
+        <select
+          id="meeting-project"
+          value={projectId}
+          onChange={(e) => setProjectId(e.target.value)}
+          className={field}
         >
+          <option value="">
+            {projectsLoaded && projects.length === 0
+              ? "No projects yet — create your first below"
+              : "Select a project\u2026"}
+          </option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+          <option value={NEW_PROJECT}>+ New project…</option>
+        </select>
+
+        {creatingProject ? (
+          <input
+            type="text"
+            autoFocus
+            value={newProjectName}
+            onChange={(e) => setNewProjectName(e.target.value)}
+            placeholder="Project name, e.g. Compliance rollout"
+            aria-label="New project name"
+            className={`${field} mt-2`}
+          />
+        ) : (
+          <p className="mt-1.5 text-xs text-[var(--muted)]">
+            Pick the same project next time and MeetMind reads the earlier
+            meetings as context — prep, promises and memory all build up.
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label htmlFor="meeting-url" className="mb-1.5 block text-sm font-medium">
           Meeting link
         </label>
         <input
@@ -57,24 +187,25 @@ export function JoinMeetingForm({ onJoined }: { onJoined: (m: Meeting) => void }
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="https://meet.google.com/abc-defg-hij"
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20"
+          className={field}
         />
         <p className="mt-1.5 text-xs text-[var(--muted)]">
-          Google Meet, Zoom or Microsoft Teams.
+          Google Meet, Zoom, Microsoft Teams, Webex, Slack huddles or GoTo.
         </p>
       </div>
 
       <div>
         <label htmlFor="meeting-title" className="mb-1.5 block text-sm font-medium">
-          Title <span className="font-normal text-[var(--muted)]">(optional)</span>
+          Title <span className="text-[var(--danger)]">*</span>
         </label>
         <input
           id="meeting-title"
           type="text"
+          required
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Weekly project sync"
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3.5 py-2.5 text-sm outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20"
+          className={field}
         />
       </div>
 
@@ -112,9 +243,17 @@ export function JoinMeetingForm({ onJoined }: { onJoined: (m: Meeting) => void }
         {busy && <Spinner />}
         {busy ? "Sending bot…" : "Join meeting"}
       </button>
-      {!consent && (
+      {!canSubmit && !busy && (
         <p className="text-center text-xs text-[var(--muted)]">
-          Confirm consent above to enable this button.
+          {!projectChosen
+            ? creatingProject
+              ? "Name the new project to continue."
+              : "Choose a project to continue."
+            : !url.trim()
+              ? "Paste the meeting link to continue."
+              : !title.trim()
+                ? "Give this meeting a title to continue."
+                : "Confirm consent above to enable this button."}
         </p>
       )}
     </form>

@@ -116,9 +116,12 @@ export default function MeetingPage({
 
   if (!meeting) {
     return (
-      <main className="mx-auto max-w-5xl px-4 py-16">
+      <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
         <ErrorBanner message={error ?? "Meeting not found."} />
-        <Link href="/" className="mt-4 inline-block text-sm text-[var(--accent)] hover:underline">
+        <Link
+          href="/dashboard"
+          className="mt-4 inline-block text-sm text-[var(--accent)] hover:underline"
+        >
           ← Back to dashboard
         </Link>
       </main>
@@ -478,7 +481,7 @@ function MeetingChat({ meetingId, enabled }: { meetingId: string; enabled: boole
             setPendingSwitch(null);
             send(true);
           }}
-          className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-800 dark:text-amber-200"
+          className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-800"
         >
           Confirm switching to the other meeting
         </button>

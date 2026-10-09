@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { useAuth } from "./AuthGate";
+import { MemoryBadge } from "./MemoryBadge";
 
 interface NavItem {
   href: string;
@@ -18,12 +19,9 @@ const NAV: NavItem[] = [
   { href: "/markup", label: "Mark Up", hint: "Prepare", tile: "var(--c-markup)", icon: "MU" },
   { href: "/promises", label: "My Promises", hint: "Commitments", tile: "var(--c-promises)", icon: "MP" },
   { href: "/progress", label: "My Progress", hint: "Overview", tile: "var(--c-progress)", icon: "PG" },
+  { href: "/inbox", label: "Priority Inbox", hint: "Client mail", tile: "var(--c-chat)", icon: "IN" },
+  { href: "/teams", label: "My Team", hint: "One shared bot", tile: "var(--coral)", icon: "TM" },
   { href: "/calendar", label: "Calendar", hint: "Schedule", tile: "var(--c-calendar)", icon: "CL" },
-];
-
-// Shown only to managers; employees have no team to look at.
-const MANAGER_NAV: NavItem[] = [
-  { href: "/team", label: "About My Team", hint: "Team overview", tile: "var(--coral)", icon: "MT" },
 ];
 
 function Brand() {
@@ -40,8 +38,6 @@ function Brand() {
 export function Sidebar() {
   const pathname = usePathname();
   const { user, signOut } = useAuth();
-  const visibleNav =
-    user?.role === "manager" ? [...NAV, ...MANAGER_NAV] : NAV;
   const [open, setOpen] = useState(false);
 
   const isActive = (href: string) =>
@@ -49,7 +45,7 @@ export function Sidebar() {
 
   const navigation = (
     <nav aria-label="Main navigation" className="flex flex-col gap-1.5">
-      {visibleNav.map((item) => {
+      {NAV.map((item) => {
         const active = isActive(item.href);
         return (
           <Link
@@ -76,7 +72,7 @@ export function Sidebar() {
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px]">{item.label}</span>
-              <span className="mt-0.5 block truncate text-[11px] font-medium text-[var(--muted-strong)]">{item.href === "/dashboard" && user?.role === "manager" ? "Team overview" : item.hint}</span>
+              <span className="mt-0.5 block truncate text-[11px] font-medium text-[var(--muted-strong)]">{item.hint}</span>
             </span>
             {active && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full" style={{ background: item.tile }} />}
           </Link>
@@ -94,7 +90,7 @@ export function Sidebar() {
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] font-bold text-[var(--foreground)]">{user?.name ?? user?.email}</p>
           <p className="mt-0.5 truncate text-[11px] font-medium capitalize text-[var(--muted-strong)]">
-            {user?.role === "manager" ? "Manager · Team view" : "Team member"}
+            {user?.role === "manager" ? "Manager" : "Team member"}
           </p>
         </div>
       </div>
@@ -155,11 +151,19 @@ export function Sidebar() {
         />
       )}
 
-      <aside className="fixed inset-y-0 left-0 z-30 hidden h-dvh w-[252px] flex-col overflow-hidden border-r border-[var(--border)] bg-white/92 px-4 py-6 backdrop-blur-xl lg:flex">
-        <Link href="/dashboard" className="mb-8 px-1" aria-label="MeetMind dashboard"><Brand /></Link>
-        <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--muted-strong)]">Workspace</p>
-        {navigation}
-        <div className="mt-auto pt-5">{account}</div>
+      {/* The nav scrolls, the account card does not. With seven items and a
+          memory badge the column overflows on a short screen, and the old
+          overflow-hidden simply cut "Sign out" off with no way to reach it.
+          The bottom padding also clears the home-indicator area on laptops
+          with a notch or rounded display. */}
+      <aside className="fixed inset-y-0 left-0 z-30 hidden h-dvh w-[252px] flex-col border-r border-[var(--border)] bg-white/92 px-4 pt-6 backdrop-blur-xl lg:flex">
+        <Link href="/dashboard" className="mb-6 shrink-0 px-1" aria-label="MeetMind dashboard"><Brand /></Link>
+        <p className="mb-2 shrink-0 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--muted-strong)]">Workspace</p>
+        <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">{navigation}</div>
+        <div className="shrink-0 space-y-3 pt-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+          <MemoryBadge />
+          {account}
+        </div>
       </aside>
     </>
   );

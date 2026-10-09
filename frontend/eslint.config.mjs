@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Windows sometimes refuses to delete a locked .next, so the dev script
+    // moves it aside. Those copies are build output, not source.
+    ".next_*/**",
   ]),
 ]);
 

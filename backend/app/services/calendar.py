@@ -27,12 +27,16 @@ from app.services.recall import RecallClient, RecallError
 logger = logging.getLogger(__name__)
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105 - a URL
 # Full calendar scope. calendar.events alone can write events, but creating a
 # separate "MeetMind AI" calendar (calendars.insert) requires this wider scope.
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/userinfo.email",
+    # Read-only mail, so a commitment made over email lands in the same
+    # ledger as one made in a meeting. Restricted scope: it must be added to
+    # the OAuth consent screen, and granting it means re-consenting.
+    "https://www.googleapis.com/auth/gmail.readonly",
 ]
 
 TIMEOUT = httpx.Timeout(30.0, connect=10.0)

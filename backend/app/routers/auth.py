@@ -28,7 +28,7 @@ class RegisterRequest(BaseModel):
     manager_email: EmailStr | None = None
 
     @model_validator(mode="after")
-    def _employees_need_a_manager(self) -> "RegisterRequest":
+    def _employees_need_a_manager(self) -> RegisterRequest:
         if self.role == "employee" and not self.manager_email:
             raise ValueError(
                 "Employees must give their manager's email so their work is "
@@ -46,7 +46,7 @@ class LoginRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105 - OAuth scheme name, not a secret
     user_id: str
     email: str
     name: str | None = None

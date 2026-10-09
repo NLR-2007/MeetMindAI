@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { BriefcaseBusiness, Lightbulb, MessageSquareText, Plus, Sparkles, Target, Upload, UserRound } from "lucide-react";
 import {
   ApiError,
   api,
+  authApi,
   type CoachNote,
   type Meeting,
   type PrepPlan,
@@ -15,11 +17,24 @@ import {
   projectApi,
 } from "@/lib/api";
 import { Card, ErrorBanner, Spinner } from "@/components/ui";
+import { SeeAllFooter } from "@/components/MeetingList";
 import { ChatText } from "@/components/ChatText";
 import Avatar from "@/components/ui/components-primitives-avatar";
 import LoadingState from "@/components/ui/loading-state";
 
 type Step = "choose" | "existing" | "new" | "plan";
+
+/** Statuses in which a bot is still attached to a running call. */
+const LIVE_STATUSES = new Set([
+  "joining_call",
+  "in_waiting_room",
+  "in_call_not_recording",
+  "in_call_recording",
+]);
+
+function isLive(status: string | null): boolean {
+  return status !== null && LIVE_STATUSES.has(status);
+}
 
 const PERSONAS = [
   { value: "client", label: "Client", hint: "Pushes on scope, cost and delivery dates" },
@@ -27,7 +42,29 @@ const PERSONAS = [
   { value: "teammate", label: "Teammate", hint: "Digs into detail and technical trade-offs" },
 ] as const;
 
+// Only the newest few here; the rest live on /markup/plans.
+const PLANS_PREVIEW = 5;
+
 export default function MarkUpPage() {
+  // useSearchParams needs a boundary for the page to stay prerenderable.
+  return (
+    <Suspense
+      fallback={
+        <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6 sm:py-10">
+          <p className="flex items-center gap-2 text-sm text-[var(--muted)]">
+            <Spinner /> Loading Mark Up…
+          </p>
+        </main>
+      }
+    >
+      <MarkUpView />
+    </Suspense>
+  );
+}
+
+function MarkUpView() {
+  const searchParams = useSearchParams();
+  const requestedPlanId = searchParams.get("plan");
   const [step, setStep] = useState<Step>("choose");
   // Mark Up covers the whole arc: prepare beforehand, review afterwards.
   const [mode, setMode] = useState<"prepare" | "review">("prepare");
@@ -39,6 +76,9 @@ export default function MarkUpPage() {
 
   // existing-project form
   const [projectId, setProjectId] = useState("");
+  // Optionally base the briefing on one specific past meeting.
+  const [sourceMeetingId, setSourceMeetingId] = useState("");
+  const [pastMeetings, setPastMeetings] = useState<Meeting[]>([]);
   const [title, setTitle] = useState("");
   const [projectName, setProjectName] = useState("");
   const [fileName, setFileName] = useState("");
@@ -56,14 +96,46 @@ export default function MarkUpPage() {
 
   useEffect(() => {
     projectApi.list().then(setProjects).catch(() => setProjects([]));
+    api
+      .listMeetings()
+      .then((rows) => setPastMeetings(rows.filter((m) => m.has_summary || m.has_transcript)))
+      .catch(() => setPastMeetings([]));
     markupApi.plans().then(setPlans).catch(() => setPlans([]));
   }, []);
+
+  // Opened from the full preparations list: fetch that one and show it.
+  useEffect(() => {
+    if (!requestedPlanId) return;
+    let cancelled = false;
+    (async () => {
+      const opened = await markupApi.plan(requestedPlanId).catch(() => null);
+      if (cancelled || !opened) return;
+      setPlan(opened);
+      setStep("plan");
+      setMode("prepare");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [requestedPlanId]);
+
+  // A follow-up only makes sense within the chosen project: offering every
+  // meeting invited picking one from an unrelated workstream.
+  const projectMeetings = useMemo(
+    () => (projectId ? pastMeetings.filter((m) => m.project_id === projectId) : []),
+    [pastMeetings, projectId],
+  );
 
   async function generateExisting() {
     setBusy(true);
     setError(null);
     try {
-      const p = await markupApi.prepareExisting(projectId || null, title.trim());
+      const inProject = projectMeetings.some((m) => m.id === sourceMeetingId);
+      const p = await markupApi.prepareExisting(
+        projectId || null,
+        title.trim(),
+        inProject ? sourceMeetingId : null,
+      );
       setPlan(p);
       setStep("plan");
       setPlans(await markupApi.plans());
@@ -215,7 +287,7 @@ export default function MarkUpPage() {
                 Earlier preparations
               </h2>
               <ul className="divide-y divide-[var(--border)]">
-                {plans.map((p) => (
+                {plans.slice(0, PLANS_PREVIEW).map((p) => (
                   <li key={p.id}>
                     <button
                       onClick={() => {
@@ -232,6 +304,12 @@ export default function MarkUpPage() {
                   </li>
                 ))}
               </ul>
+              <SeeAllFooter
+                shown={PLANS_PREVIEW}
+                total={plans.length}
+                href="/markup/plans"
+                label="See all preparations"
+              />
             </Card>
           )}
         </>
@@ -246,7 +324,12 @@ export default function MarkUpPage() {
           </div>
           <select
             value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
+            onChange={(e) => {
+              setProjectId(e.target.value);
+              // A follow-up meeting from the previous project is meaningless
+              // here, so the choice resets with the project.
+              setSourceMeetingId("");
+            }}
             className="w-full rounded-xl border border-[var(--border)] bg-white px-3.5 py-3 text-sm outline-none focus:border-[var(--accent)]"
           >
             <option value="">Select a project</option>
@@ -256,6 +339,37 @@ export default function MarkUpPage() {
               </option>
             ))}
           </select>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-bold text-[var(--muted-strong)]">
+              Follow up on a specific meeting{" "}
+              <span className="font-normal text-[var(--muted)]">(optional)</span>
+            </label>
+            <select
+              value={sourceMeetingId}
+              onChange={(event) => setSourceMeetingId(event.target.value)}
+              disabled={!projectId || projectMeetings.length === 0}
+              className="w-full rounded-xl border border-[var(--border)] bg-white px-3.5 py-3 text-sm outline-none focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:bg-[var(--surface-2)] disabled:text-[var(--muted)]"
+            >
+              <option value="">
+                {!projectId
+                  ? "Select a project first"
+                  : projectMeetings.length === 0
+                    ? "No recorded meetings in this project yet"
+                    : "All meetings in this project"}
+              </option>
+              {projectMeetings.map((meeting) => (
+                <option key={meeting.id} value={meeting.id}>
+                  {meeting.title || meeting.meeting_url}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1.5 text-[11px] text-[var(--muted-strong)]">
+              {projectId && projectMeetings.length === 0
+                ? "Record a meeting under this project and it will appear here."
+                : "Pick one to prepare a follow-up to that conversation; its decisions and open commitments lead the briefing."}
+            </p>
+          </div>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -358,6 +472,8 @@ function PlanView({ plan, onBack }: { plan: PrepPlan; onBack: () => void }) {
   // Normally Live Assist answers questions others ask you. Practice mode also
   // answers your own, so one person can rehearse or demo it alone.
   const [answerOwn, setAnswerOwn] = useState(false);
+  const [liveState, setLiveState] = useState<string>("off");
+  const [liveMessage, setLiveMessage] = useState<string | null>(null);
   const [liveQuestion, setLiveQuestion] = useState("");
   const [liveAnswer, setLiveAnswer] = useState("");
   const [liveBusy, setLiveBusy] = useState(false);
@@ -389,6 +505,8 @@ function PlanView({ plan, onBack }: { plan: PrepPlan; onBack: () => void }) {
         if (status.answer) setLiveAnswer(status.answer);
         else if (status.state === "listening") setLiveAnswer("");
         setLiveBusy(status.state === "waiting");
+        setLiveState(status.state);
+        setLiveMessage(status.message ?? null);
       } catch (err) {
         if (!cancelled) setError(err instanceof ApiError ? err.message : "Live Assist lost connection.");
       } finally {
@@ -528,7 +646,15 @@ function PlanView({ plan, onBack }: { plan: PrepPlan; onBack: () => void }) {
               className="min-w-0 flex-1 rounded-xl border border-[var(--border)] bg-white px-3.5 py-3 text-sm outline-none focus:border-[var(--accent)]"
             >
               {meetings.length === 0 && <option value="">No meeting bot available</option>}
-              {meetings.map((meeting) => <option key={meeting.id} value={meeting.id}>{meeting.title || meeting.meeting_url}</option>)}
+              {/* Live meetings first: only those can produce live answers. */}
+              {[...meetings]
+                .sort((a, b) => Number(isLive(b.status)) - Number(isLive(a.status)))
+                .map((meeting) => (
+                  <option key={meeting.id} value={meeting.id}>
+                    {isLive(meeting.status) ? "● LIVE — " : "Ended — "}
+                    {meeting.title || meeting.meeting_url}
+                  </option>
+                ))}
             </select>
             <button onClick={toggleLiveAssist} disabled={liveBusy || (!liveEnabled && !liveMeetingId)} className={`rounded-xl px-5 py-3 text-sm font-bold transition disabled:opacity-40 ${liveEnabled ? "border border-[var(--danger)]/25 bg-[var(--danger-soft)] text-[var(--danger)]" : "bg-[var(--accent)] text-white"}`}>{liveEnabled ? "Stop listening" : "Start listening"}</button>
           </div>
@@ -552,8 +678,37 @@ function PlanView({ plan, onBack }: { plan: PrepPlan; onBack: () => void }) {
             </span>
           </label>
           {liveEnabled && (
-            <div className="mt-4 flex items-center gap-2 rounded-xl border border-[var(--success)]/20 bg-[var(--success-soft)] px-3 py-2 text-xs font-semibold text-[var(--success)]">
-              <span className="recording-dot h-2 w-2 rounded-full bg-[var(--success)]" /> Listening privately for questions
+            <div
+              className="mt-4 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs font-semibold"
+              style={{
+                borderColor:
+                  liveState === "not_live"
+                    ? "color-mix(in oklab, var(--warning) 30%, transparent)"
+                    : "color-mix(in oklab, var(--success) 25%, transparent)",
+                background:
+                  liveState === "not_live" ? "var(--warning-soft)" : "var(--success-soft)",
+                color: liveState === "not_live" ? "var(--warning)" : "var(--success)",
+              }}
+            >
+              <span
+                className={`mt-1 h-2 w-2 shrink-0 rounded-full ${liveState === "not_live" ? "" : "recording-dot"}`}
+                style={{
+                  background:
+                    liveState === "not_live" ? "var(--warning)" : "var(--success)",
+                }}
+              />
+              <span>
+                {liveState === "not_live"
+                  ? "This meeting has ended"
+                  : liveState === "waiting"
+                    ? "Heard a question — waiting for you to finish"
+                    : "Listening privately for questions"}
+                {liveMessage && (
+                  <span className="mt-0.5 block font-normal text-[var(--muted-strong)]">
+                    {liveMessage}
+                  </span>
+                )}
+              </span>
             </div>
           )}
           {liveBusy && liveEnabled && <div className="mt-4"><LoadingState label="Waiting two seconds" variant="Dots" /></div>}
@@ -758,7 +913,7 @@ function PlanView({ plan, onBack }: { plan: PrepPlan; onBack: () => void }) {
             <ChatText content={feedback.feedback} />
             {feedback.strengths.length > 0 && (
               <div>
-                <p className="text-xs font-semibold uppercase text-emerald-600 dark:text-emerald-400">
+                <p className="text-xs font-semibold uppercase text-emerald-600">
                   Strengths
                 </p>
                 <ul className="list-disc pl-5 text-sm">
@@ -770,7 +925,7 @@ function PlanView({ plan, onBack }: { plan: PrepPlan; onBack: () => void }) {
             )}
             {feedback.improvements.length > 0 && (
               <div>
-                <p className="text-xs font-semibold uppercase text-amber-600 dark:text-amber-400">
+                <p className="text-xs font-semibold uppercase text-amber-600">
                   Improve
                 </p>
                 <ul className="list-disc pl-5 text-sm">
@@ -830,6 +985,8 @@ function ReviewTab() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Speakers heard in a transcript the user could not be matched to.
+  const [unmatched, setUnmatched] = useState<string[] | null>(null);
 
   const loadNotes = useCallback(async () => {
     try {
@@ -842,17 +999,31 @@ function ReviewTab() {
     }
   }, []);
 
+  // Reviews and the meeting list are independent, so fetch them together and
+  // apply both at once rather than rendering twice on the way in.
   useEffect(() => {
-    loadNotes();
-    api
-      .listMeetings()
-      .then((rows) => {
-        const ready = rows.filter((m) => m.has_transcript);
-        setMeetings(ready);
-        if (ready.length) setSelected((prev) => prev || ready[0].id);
-      })
-      .catch(() => setMeetings([]));
-  }, [loadNotes]);
+    let cancelled = false;
+    (async () => {
+      const [noteData, rows] = await Promise.all([
+        coachApi.notes().catch(() => null),
+        api.listMeetings().catch(() => [] as Meeting[]),
+      ]);
+      if (cancelled) return;
+      if (noteData === null) {
+        setError("Could not load reviews.");
+        setNotes([]);
+      } else {
+        setNotes(noteData.notes);
+        setThemes(noteData.recurring_themes);
+      }
+      const ready = rows.filter((m) => m.has_transcript);
+      setMeetings(ready);
+      if (ready.length) setSelected((prev) => prev || ready[0].id);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function review() {
     if (!selected) return;
@@ -868,7 +1039,29 @@ function ReviewTab() {
       );
       await loadNotes();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Review failed.");
+      if (err instanceof ApiError && Array.isArray(err.payload?.speakers)) {
+        // We know who WAS recorded, so offer to claim one instead of a dead end.
+        setUnmatched(err.payload.speakers as string[]);
+        setError(null);
+      } else {
+        setError(err instanceof ApiError ? err.message : "Review failed.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function claimSpeaker(name: string) {
+    setBusy(true);
+    try {
+      const me = await authApi.me();
+      const names = Array.from(new Set([...(me.display_names ?? []), name]));
+      await authApi.setAliases(names);
+      setUnmatched(null);
+      setNotice(`Added “${name}” to your profile. Reviewing again…`);
+      await review();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save the name.");
     } finally {
       setBusy(false);
     }
@@ -906,6 +1099,9 @@ function ReviewTab() {
             >
               {meetings.map((m) => (
                 <option key={m.id} value={m.id}>
+                  {/* Review spans every project, so each row says which one
+                      it came from rather than leaving you to guess. */}
+                  {m.project_name ? `[${m.project_name}] ` : ""}
                   {m.title || m.meeting_url}
                 </option>
               ))}
@@ -922,6 +1118,41 @@ function ReviewTab() {
       </Card>
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
+      {unmatched && (
+        <div className="rounded-xl border border-[var(--warning)]/30 bg-[var(--warning-soft)] p-4">
+          <p className="text-sm font-bold" style={{ color: "var(--warning)" }}>
+            We could not find you in this transcript
+          </p>
+          <p className="mt-1 text-xs leading-5 text-[var(--muted-strong)]">
+            Coaching only ever reviews your own words, so it will not guess.
+            {unmatched.length > 0
+              ? " Which of these speakers are you?"
+              : " No speakers were recorded in this meeting."}
+          </p>
+          {unmatched.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {unmatched.map((name) => (
+                <button
+                  key={name}
+                  onClick={() => claimSpeaker(name)}
+                  disabled={busy}
+                  className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+                >
+                  I am {name}
+                </button>
+              ))}
+              <button
+                onClick={() => setUnmatched(null)}
+                className="rounded-lg border border-[var(--border)] bg-white px-3 py-1.5 text-xs font-semibold"
+              >
+                None of these
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {notice && (
         <p className="rounded-xl border border-[var(--border)] bg-white px-4 py-2.5 text-sm text-[var(--muted-strong)]">
           {notice}

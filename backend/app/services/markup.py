@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.models import CoachingNote, Commitment, Meeting, PrepPlan, Project
+from app.models import CoachingNote, Meeting, PrepPlan, User
 from app.services.groq_client import GroqClient, GroqError
 from app.services.memory import get_memory_service
 from app.services.promisemirror import analyse as analyse_commitments
@@ -164,7 +164,7 @@ Use only the supplied preparation plan and practice history.
 
 
 async def _ask_json(client: GroqClient, system: str, user: str) -> dict[str, Any]:
-    content, _tokens = await client._chat(  # noqa: SLF001
+    content, _tokens = await client._chat(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
         json_mode=True,
     )
@@ -175,11 +175,22 @@ async def _ask_json(client: GroqClient, system: str, user: str) -> dict[str, Any
 
 
 def gather_project_context(
-    db: Session, *, owner_user_id: str, project_id: str | None, limit_meetings: int = 6
+    db: Session,
+    *,
+    owner_user_id: str,
+    project_id: str | None,
+    meeting_id: str | None = None,
+    limit_meetings: int = 6,
 ) -> dict[str, Any]:
-    """Everything the user is authorised to see about this project."""
+    """Everything the user is authorised to see about this project.
+
+    `meeting_id` narrows it to one past meeting, for preparing a follow-up to
+    that specific conversation rather than the project as a whole.
+    """
     stmt = select(Meeting).where(Meeting.owner_id == owner_user_id)
-    if project_id:
+    if meeting_id:
+        stmt = stmt.where(Meeting.id == meeting_id)
+    elif project_id:
         stmt = stmt.where(Meeting.project_id == project_id)
     meetings = list(
         db.scalars(stmt.order_by(Meeting.created_at.desc()).limit(limit_meetings))
@@ -238,16 +249,23 @@ async def build_existing_project_plan(
     owner_user_id: str,
     project_id: str | None,
     title: str | None,
+    meeting_id: str | None = None,
 ) -> PrepPlan:
-    context = gather_project_context(db, owner_user_id=owner_user_id, project_id=project_id)
+    context = gather_project_context(
+        db,
+        owner_user_id=owner_user_id,
+        project_id=project_id,
+        meeting_id=meeting_id,
+    )
 
     prompt = _context_text(context)
     # Hindsight adds anything semantically relevant that the recent-meeting
     # window missed.
     memory = get_memory_service(db)
-    if project_id:
+    recall_scope, recall_id = ("meeting", meeting_id) if meeting_id else ("project", project_id)
+    if recall_id:
         recalled = memory.recall_memory(
-            title or "upcoming meeting", scope="project", scope_id=project_id, limit=8
+            title or "upcoming meeting", scope=recall_scope, scope_id=recall_id, limit=8
         )
         if recalled:
             prompt += "\n\n--- Recalled from project memory ---\n" + "\n".join(
@@ -350,7 +368,7 @@ async def practice_turn(
             or "Start the meeting with your first question.",
         }
     )
-    reply, _ = await client._chat(messages, temperature=0.6)  # noqa: SLF001
+    reply, _ = await client._chat(messages, temperature=0.6)
     return reply
 
 
@@ -364,6 +382,21 @@ async def practice_feedback(
         "strengths": data.get("strengths") or [],
         "improvements": (data.get("improvements") or [])[:5],
     }
+
+
+class SpeakerNotFound(ValueError):
+    """The requesting user does not appear in this transcript.
+
+    Carries the speakers who *were* recorded, so the caller can offer to claim
+    one rather than leaving the user stuck.
+    """
+
+    def __init__(self, speakers: list[str]) -> None:
+        self.speakers = speakers
+        super().__init__(
+            "Could not find you in this transcript, so there is nothing of "
+            "yours to review."
+        )
 
 
 def split_transcript_by_speaker(
@@ -427,13 +460,7 @@ async def coach_on_meeting(
         speakers = sorted(
             {line.split(":", 1)[0].strip() for line in others if ":" in line}
         )
-        raise ValueError(
-            "Could not find you in this transcript, so there is nothing of "
-            "yours to review. Speakers recorded were: "
-            + (", ".join(speakers) or "none")
-            + ". Add the name you are called in meetings under your profile "
-            "aliases and try again."
-        )
+        raise SpeakerNotFound(speakers)
 
     planned = "(no preparation plan was made for this meeting)"
     if plan:
@@ -508,7 +535,7 @@ async def suggest_live_answer(
 ) -> str:
     """Draft an answer the user can say now, grounded in their preparation."""
     client = GroqClient(settings)
-    reply, _tokens = await client._chat(  # noqa: SLF001
+    reply, _tokens = await client._chat(
         [
             {"role": "system", "content": LIVE_ANSWER_PROMPT},
             {
@@ -541,5 +568,5 @@ async def answer_coaching_question(
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": question})
 
-    reply, _tokens = await client._chat(messages, temperature=0.3)  # noqa: SLF001
+    reply, _tokens = await client._chat(messages, temperature=0.3)
     return reply

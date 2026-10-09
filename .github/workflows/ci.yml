@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes an in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (ruff + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-ci.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Tests
+        # The suite configures its own SQLite database and mocks every
+        # outbound call, so no secrets and no services are needed.
+        run: pytest -q
+
+  frontend:
+    name: Frontend (lint + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npx eslint .
+
+      - name: Build
+        # Must run before the type check: tsconfig pulls in .next/types and
+        # next-env.d.ts, which are generated, so a clean checkout has neither.
+        env:
+          NEXT_PUBLIC_API_BASE: http://localhost:8000
+        run: npm run build
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+  secrets:
+    name: No committed secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan tracked files for live credentials
+        # The real keys live in .env, which is gitignored. This is the net that
+        # catches the day someone pastes one into tracked code by mistake.
+        run: |
+          set -euo pipefail
+          patterns='gsk_[A-Za-z0-9]{20,}|nvapi-[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9+/=]{20,}|GOCSPX-[A-Za-z0-9_-]{10,}'
+          if git grep -nIE "$patterns" -- . ':!*.example' ':!.github/workflows/ci.yml'; then
+            echo "::error::A credential-shaped string is committed. Remove it and rotate the key."
+            exit 1
+          fi
+          echo "No credential-shaped strings in tracked files."

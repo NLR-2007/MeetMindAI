@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -36,12 +36,12 @@ STATE_TTL = timedelta(minutes=10)
 def _new_state(user_id: str) -> str:
     _prune_states()
     state = secrets.token_urlsafe(24)
-    _PENDING_STATES[state] = (datetime.now(timezone.utc), user_id)
+    _PENDING_STATES[state] = (datetime.now(UTC), user_id)
     return state
 
 
 def _prune_states() -> None:
-    cutoff = datetime.now(timezone.utc) - STATE_TTL
+    cutoff = datetime.now(UTC) - STATE_TTL
     for key, (created, _) in list(_PENDING_STATES.items()):
         if created < cutoff:
             _PENDING_STATES.pop(key, None)
@@ -103,6 +103,9 @@ async def oauth_callback(
             oauth_email=email,
         )
     except (CalendarError, RecallError) as exc:
+        # The user only ever sees "connect_failed", so the reason has to land
+        # in the log or it is lost for good.
+        logger.warning("Calendar connect failed: %s", exc)
         return fail("connect_failed")
 
     recall_id = created.get("id")
@@ -215,7 +218,7 @@ async def list_events(
     if calendar is None or calendar.owner_id != user.id:
         raise HTTPException(status_code=404, detail=f"Unknown calendar {calendar_id}")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     try:
         events = await RecallCalendarClient(settings).list_events(
             calendar.recall_calendar_id,
@@ -256,7 +259,7 @@ async def schedule_bot(
     """Schedule the notetaker for a calendar event."""
     if not consent_acknowledged:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "consent_acknowledged must be true. The bot records and transcribes "
                 "the meeting; confirm participants are informed before scheduling."
@@ -321,7 +324,7 @@ async def push_deadline_to_calendar(
 
     if deadline.due_at is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"This deadline has no resolvable date (spoken as "
                 f"{deadline.when_text!r}), so it cannot be placed on a calendar."
@@ -429,9 +432,7 @@ async def list_deadlines(
     not come back through the calendar-events feed. This reads our own records
     instead, which is the authoritative source for what MeetMind extracted.
     """
-    from app.models import Deadline
-
-    from app.models import Meeting
+    from app.models import Deadline, Meeting
 
     rows = db.scalars(
         select(Deadline)

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
@@ -33,7 +33,7 @@ def verify_password(password: str, password_hash: str | None) -> bool:
 
 
 def create_access_token(settings: Settings, user_id: str, email: str) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": user_id,
         "email": email,

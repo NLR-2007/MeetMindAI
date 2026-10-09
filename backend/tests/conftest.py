@@ -19,8 +19,8 @@ os.environ.setdefault("RECALL_REGION", "us-west-2")
 os.environ.setdefault("GROQ_API_KEY", "test_groq_key")
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 
-from app.db import Base, get_db  # noqa: E402
-from app.main import app  # noqa: E402
+from app.db import Base, get_db
+from app.main import app
 
 test_engine = create_engine(
     "sqlite://",

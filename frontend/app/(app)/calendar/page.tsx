@@ -1,7 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   API_BASE,
   ApiError,
@@ -11,44 +19,114 @@ import {
   type Meeting,
   api,
   calendarApi,
+  projectApi,
+  type ProjectSummary,
 } from "@/lib/api";
 import { Card, EmptyState, ErrorBanner, Spinner } from "@/components/ui";
 import { MonthCalendar, type CalendarItem } from "@/components/MonthCalendar";
 
+// The deadline list is a staging area, not an archive; the rest expand in place.
+const DEADLINES_PREVIEW = 5;
+
+const CONSENT_KEY = "meetmind.calendar.consent";
+
+/**
+ * The scheduling-consent tick, kept in localStorage.
+ *
+ * Browser storage can throw (private mode, blocked site data), so every access
+ * is guarded and failure simply means "not remembered" rather than an error.
+ */
+const consentStore = {
+  listeners: new Set<() => void>(),
+  subscribe(onChange: () => void) {
+    consentStore.listeners.add(onChange);
+    return () => {
+      consentStore.listeners.delete(onChange);
+    };
+  },
+  get(): boolean {
+    try {
+      return window.localStorage.getItem(CONSENT_KEY) === "yes";
+    } catch {
+      return false;
+    }
+  },
+  set(next: boolean) {
+    try {
+      if (next) window.localStorage.setItem(CONSENT_KEY, "yes");
+      else window.localStorage.removeItem(CONSENT_KEY);
+    } catch {
+      /* not being able to remember it is not worth surfacing */
+    }
+    consentStore.listeners.forEach((l) => l());
+  },
+};
+
 export default function CalendarPage() {
+  // The OAuth outcome arrives as a query string, and useSearchParams needs a
+  // boundary so this page can still be prerendered.
+  return (
+    <Suspense
+      fallback={
+        <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
+          <p className="flex items-center gap-2 text-sm text-[var(--muted)]">
+            <Spinner /> Loading calendar...
+          </p>
+        </main>
+      }
+    >
+      <CalendarView />
+    </Suspense>
+  );
+}
+
+function CalendarView() {
+  const searchParams = useSearchParams();
   const [calendars, setCalendars] = useState<CalendarConnection[] | null>(null);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [outcomeDismissed, setOutcomeDismissed] = useState(false);
   const [busyEvent, setBusyEvent] = useState<string | null>(null);
   const [deadlines, setDeadlines] = useState<DeadlineEntry[]>([]);
-  const [consent, setConsent] = useState(false);
+  // Remembered per browser so it survives a reload: re-ticking the same box
+  // every visit is friction, not a safeguard. useSyncExternalStore rather than
+  // an effect, so the server snapshot is a definite false and hydration cannot
+  // mismatch. It is only a UI convenience - the backend re-checks consent on
+  // every schedule request, so a remembered tick schedules nothing by itself.
+  const consent = useSyncExternalStore(
+    consentStore.subscribe,
+    consentStore.get,
+    () => false,
+  );
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [showAllDeadlines, setShowAllDeadlines] = useState(false);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  // Narrows the grid and the deadline list to one workstream. With a dozen
+  // meetings a month the grid is unreadable otherwise.
+  const [projectFilter, setProjectFilter] = useState("");
 
-  // Surface the OAuth redirect outcome.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("connected")) setNotice("Calendar connected.");
-    const err = params.get("error");
-    if (err) setError(`Could not connect the calendar: ${err.replace(/_/g, " ")}`);
-  }, []);
-
-  const loadCalendars = useCallback(async () => {
-    try {
-      const rows = await calendarApi.list();
-      setCalendars(rows);
-      if (rows.length && !selected) setSelected(rows[0].id);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load calendars.");
-      setCalendars([]);
-    }
-  }, [selected]);
-
-  useEffect(() => {
-    loadCalendars();
-  }, [loadCalendars]);
+  // Read the redirect outcome straight from the URL instead of copying it into
+  // state on mount: one source of truth, and no render cascade.
+  const connectErrorParam = searchParams.get("error");
+  const notice =
+    outcomeDismissed || !searchParams.get("connected") ? null : "Calendar connected.";
+  const oauthError =
+    outcomeDismissed || !connectErrorParam
+      ? null
+      : connectErrorParam === "access_denied"
+        ? // Google sends access_denied both when the user cancels and when the
+          // account is not on the OAuth consent screen's test-user list. The
+          // second is far more confusing, so name it explicitly: the raw
+          // "access denied" sends people hunting for a bug in this app.
+          "Google refused the connection (access_denied). Either you cancelled " +
+          "on Google's screen, or this Google account is not an approved " +
+          "tester. While the MeetMind AI OAuth app is in Testing mode, only " +
+          "accounts listed under Google Cloud Console → APIs & Services → " +
+          "OAuth consent screen → Test users can connect. Add the account " +
+          "there, then try again."
+        : `Could not connect the calendar: ${connectErrorParam.replace(/_/g, " ")}`;
 
   const loadDeadlines = useCallback(async () => {
     try {
@@ -58,10 +136,6 @@ export default function CalendarPage() {
     }
   }, []);
 
-  useEffect(() => {
-    loadDeadlines();
-  }, [loadDeadlines]);
-
   const loadMeetings = useCallback(async () => {
     try {
       setMeetings(await api.listMeetings());
@@ -70,13 +144,85 @@ export default function CalendarPage() {
     }
   }, []);
 
+  const loadEvents = useCallback(async (calendarId: string) => {
+    try {
+      setEvents(await calendarApi.events(calendarId));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to load events.");
+    }
+  }, []);
+
+  // One first load for the three independent lists, applied in a single pass so
+  // mounting does not trigger three extra renders. Nothing is written after
+  // unmount, which matters because OAuth navigates away mid-flight.
   useEffect(() => {
-    loadMeetings();
-  }, [loadMeetings]);
+    let cancelled = false;
+    (async () => {
+      const [cals, dues, mtgs, projectRows] = await Promise.all([
+        calendarApi.list().catch(() => null),
+        calendarApi.deadlines().catch(() => [] as DeadlineEntry[]),
+        api.listMeetings(200).catch(() => [] as Meeting[]),
+        projectApi.list().catch(() => [] as ProjectSummary[]),
+      ]);
+      if (cancelled) return;
+      setProjects(projectRows);
+      if (cals === null) {
+        setError("Failed to load calendars.");
+        setCalendars([]);
+      } else {
+        setCalendars(cals);
+        // Default to the first calendar, but never clobber a chosen one.
+        if (cals.length) setSelected((prev) => prev ?? cals[0].id);
+      }
+      setDeadlines(dues);
+      setMeetings(mtgs);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Events belong to whichever calendar is selected.
+  useEffect(() => {
+    if (!selected) return;
+    let cancelled = false;
+    (async () => {
+      const rows = await calendarApi.events(selected).catch(() => null);
+      if (cancelled) return;
+      if (rows === null) setError("Failed to load events.");
+      else setEvents(rows);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
+
+  // A deadline has no project of its own: it inherits the project of the
+  // meeting it was extracted from.
+  const projectOfMeeting = useMemo(
+    () => new Map(meetings.map((m) => [m.id, m.project_id])),
+    [meetings],
+  );
+  const visibleMeetings = useMemo(
+    () =>
+      projectFilter
+        ? meetings.filter((m) => m.project_id === projectFilter)
+        : meetings,
+    [meetings, projectFilter],
+  );
+  const visibleDeadlines = useMemo(
+    () =>
+      projectFilter
+        ? deadlines.filter(
+            (d) => projectOfMeeting.get(d.meeting_id) === projectFilter,
+          )
+        : deadlines,
+    [deadlines, projectFilter, projectOfMeeting],
+  );
 
   // Everything that has a date, in one shape the month grid understands.
-  const calendarItems: CalendarItem[] = [
-    ...meetings.map((m) => ({
+  const calendarItems: CalendarItem[] = useMemo(() => [
+    ...visibleMeetings.map((m) => ({
       id: `m-${m.id}`,
       date: m.created_at,
       title: m.title || m.meeting_url,
@@ -84,7 +230,7 @@ export default function CalendarPage() {
       detail: m.status,
       href: `/meetings/${m.id}`,
     })),
-    ...deadlines
+    ...visibleDeadlines
       .filter((d) => d.due_at)
       .map((d) => ({
         id: `d-${d.id}`,
@@ -105,9 +251,14 @@ export default function CalendarPage() {
         detail: e.meeting_url ? e.meeting_platform : "no meeting link",
         confirmed: e.bot_scheduled,
       })),
-  ];
+    ],
+    [visibleMeetings, visibleDeadlines, events],
+  );
 
   const isConnected = (calendars ?? []).some((c) => c.status === "connected");
+  const connectedAccounts = (calendars ?? [])
+    .filter((c) => c.status === "connected" && c.email)
+    .map((c) => c.email as string);
 
   async function refreshAll() {
     setRefreshing(true);
@@ -121,18 +272,6 @@ export default function CalendarPage() {
       setRefreshing(false);
     }
   }
-
-  const loadEvents = useCallback(async (calendarId: string) => {
-    try {
-      setEvents(await calendarApi.events(calendarId));
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load events.");
-    }
-  }, []);
-
-  useEffect(() => {
-    if (selected) loadEvents(selected);
-  }, [selected, loadEvents]);
 
   async function connect() {
     setError(null);
@@ -178,9 +317,20 @@ export default function CalendarPage() {
       </header>
 
       {notice && (
-        <p className="mb-5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-700 dark:text-emerald-300">
-          {notice}
+        <p className="mb-5 flex items-start justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-700">
+          <span>{notice}</span>
+          <button
+            onClick={() => setOutcomeDismissed(true)}
+            className="shrink-0 text-xs font-semibold hover:underline"
+          >
+            Dismiss
+          </button>
         </p>
+      )}
+      {oauthError && (
+        <div className="mb-5">
+          <ErrorBanner message={oauthError} onDismiss={() => setOutcomeDismissed(true)} />
+        </div>
       )}
       {error && (
         <div className="mb-5">
@@ -188,81 +338,103 @@ export default function CalendarPage() {
         </div>
       )}
 
-      <Card className="mb-6 p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold">Connected calendars</h2>
-            <p className="mt-0.5 text-xs text-[var(--muted)]">
-              MeetMind reads your events and adds meeting deadlines back to your calendar.
-            </p>
-          </div>
-          {isConnected ? (
-            <div className="flex items-center gap-2">
-              <span
-                className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold"
-                style={{
-                  borderColor: "color-mix(in oklab, var(--success) 35%, transparent)",
-                  background: "var(--success-soft)",
-                  color: "var(--success)",
-                }}
-              >
-                <span
-                  aria-hidden
-                  className="grid h-3.5 w-3.5 place-items-center rounded-full text-[9px] text-white"
-                  style={{ background: "var(--success)" }}
-                >
-                  ✓
-                </span>
-                Connected
-              </span>
-              <button
-                onClick={connect}
-                title="Reconnect to refresh permissions or switch account"
-                className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs font-semibold transition hover:bg-[var(--surface-2)]"
-              >
-                Reconnect
-              </button>
+      {/* Once a calendar is connected this is settled business, so it reads as
+          one quiet line rather than a panel. Only the unconnected state needs
+          to explain itself and ask for something. */}
+      {isConnected ? (
+        <div className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
+          <span
+            className="inline-flex items-center gap-1.5 font-semibold"
+            style={{ color: "var(--success)" }}
+          >
+            <span
+              aria-hidden
+              className="grid h-3.5 w-3.5 place-items-center rounded-full text-[9px] text-white"
+              style={{ background: "var(--success)" }}
+            >
+              ✓
+            </span>
+            Google Calendar connected
+          </span>
+          {connectedAccounts.length > 0 && (
+            <span className="truncate text-[var(--muted)]">
+              {connectedAccounts.join(", ")}
+            </span>
+          )}
+          {calendars !== null && calendars.length > 1 && (
+            <select
+              value={selected ?? ""}
+              onChange={(e) => setSelected(e.target.value)}
+              aria-label="Which calendar to show"
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-xs"
+            >
+              {calendars.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.email ?? c.recall_calendar_id}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            onClick={connect}
+            title="Reconnect to refresh permissions or add another account"
+            className="font-semibold text-[var(--accent)] hover:underline"
+          >
+            Reconnect
+          </button>
+        </div>
+      ) : (
+        <Card className="mb-6 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">Connect Google Calendar</h2>
+              <p className="mt-0.5 text-xs text-[var(--muted)]">
+                MeetMind reads your events and adds meeting deadlines back to
+                your calendar.
+              </p>
             </div>
-          ) : (
             <button
               onClick={connect}
               className="rounded-lg bg-[var(--accent)] px-3.5 py-2 text-sm font-semibold text-[var(--accent-fg)] transition hover:opacity-90"
             >
               Connect Google Calendar
             </button>
+          </div>
+          {calendars === null && (
+            <p className="mt-4 flex items-center gap-2 text-sm text-[var(--muted)]">
+              <Spinner /> Loading…
+            </p>
           )}
-        </div>
+        </Card>
+      )}
 
-        {calendars === null ? (
-          <p className="mt-4 flex items-center gap-2 text-sm text-[var(--muted)]">
-            <Spinner /> Loading…
-          </p>
-        ) : calendars.length === 0 ? (
-          <p className="mt-4 text-sm text-[var(--muted)]">No calendars connected yet.</p>
-        ) : (
-          <ul className="mt-4 space-y-2">
-            {calendars.map((c) => (
-              <li key={c.id}>
-                <button
-                  onClick={() => setSelected(c.id)}
-                  className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-                    selected === c.id
-                      ? "border-[var(--accent)] bg-[var(--accent)]/5"
-                      : "border-[var(--border)] hover:bg-[var(--background)]"
-                  }`}
-                >
-                  <span className="font-medium">{c.email ?? c.recall_calendar_id}</span>
-                  <span className="ml-2 text-xs text-[var(--muted)]">
-                    {c.platform} {c.status ? `· ${c.status}` : ""}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <label htmlFor="calendar-project" className="text-xs text-[var(--muted)]">
+          Show
+        </label>
+        <select
+          id="calendar-project"
+          value={projectFilter}
+          onChange={(e) => setProjectFilter(e.target.value)}
+          className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-xs"
+        >
+          <option value="">All projects</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        {projectFilter && (
+          <span className="text-xs text-[var(--muted)]">
+            {visibleMeetings.length} meeting
+            {visibleMeetings.length === 1 ? "" : "s"} · {visibleDeadlines.length}{" "}
+            deadline{visibleDeadlines.length === 1 ? "" : "s"}
+          </span>
         )}
-      </Card>
+      </div>
 
-      <div className="my-6">
+      <div className="mb-6">
         <MonthCalendar
           items={calendarItems}
           onRefresh={refreshAll}
@@ -282,10 +454,10 @@ export default function CalendarPage() {
             <input
               type="checkbox"
               checked={consent}
-              onChange={(e) => setConsent(e.target.checked)}
+              onChange={(e) => consentStore.set(e.target.checked)}
               className="mt-0.5 h-4 w-4 shrink-0 accent-amber-600"
             />
-            <span className="text-amber-900 dark:text-amber-200">
+            <span className="text-amber-900">
               I confirm participants of the meetings I schedule will be told that
               <strong> MeetMind AI Notetaker </strong> records and transcribes.
             </span>
@@ -350,14 +522,17 @@ export default function CalendarPage() {
             events in Google Calendar.
           </p>
         </div>
-        {deadlines.length === 0 ? (
+        {visibleDeadlines.length === 0 ? (
           <EmptyState
             title="No deadlines yet"
             hint="Record a meeting where a date is mentioned."
           />
         ) : (
           <ul className="divide-y divide-[var(--border)]">
-            {deadlines.map((d) => (
+            {(showAllDeadlines
+              ? visibleDeadlines
+              : visibleDeadlines.slice(0, DEADLINES_PREVIEW)
+            ).map((d) => (
               <li
                 key={d.id}
                 className="flex items-center justify-between gap-4 px-5 py-3"
@@ -381,7 +556,7 @@ export default function CalendarPage() {
                     href={d.google_event_link ?? "#"}
                     target="_blank"
                     rel="noreferrer"
-                    className="shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:underline dark:text-emerald-400"
+                    className="shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:underline"
                   >
                     On calendar ↗
                   </a>
@@ -393,6 +568,24 @@ export default function CalendarPage() {
               </li>
             ))}
           </ul>
+        )}
+        {visibleDeadlines.length > DEADLINES_PREVIEW && (
+          // Expanded in place rather than on its own page: the action here is
+          // pushing a deadline to Google Calendar, and that belongs beside the
+          // calendar it is being pushed to.
+          <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] px-5 py-3">
+            <span className="text-xs text-[var(--muted)]">
+              {showAllDeadlines
+                ? `Showing all ${visibleDeadlines.length}.`
+                : `Showing the ${DEADLINES_PREVIEW} soonest of ${visibleDeadlines.length}.`}
+            </span>
+            <button
+              onClick={() => setShowAllDeadlines((v) => !v)}
+              className="shrink-0 text-xs font-semibold text-[var(--accent)] hover:underline"
+            >
+              {showAllDeadlines ? "Show fewer" : `Show all ${visibleDeadlines.length}`}
+            </button>
+          </div>
         )}
       </Card>
 

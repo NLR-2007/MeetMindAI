@@ -5,7 +5,13 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ExternalLink, X } from "lucide-react";
-import { ApiError, api, type ChatMessage, type Meeting } from "@/lib/api";
+import {
+  ApiError,
+  api,
+  type ChatMessage,
+  type Meeting,
+  type RecalledMemory,
+} from "@/lib/api";
 import { ChatText } from "./ChatText";
 import { ErrorBanner } from "./ui";
 import { AiInput } from "./ui/ai-input";
@@ -18,6 +24,9 @@ export function FloatingChat() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [meetingId, setMeetingId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // What memory returned for the most recent answer, shown as provenance.
+  const [recalled, setRecalled] = useState<RecalledMemory[]>([]);
+  const [memoryBackend, setMemoryBackend] = useState("mysql");
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +70,8 @@ export function FloatingChat() {
 
     try {
       const response = await api.chat(targetMeetingId, text, confirmSwitch);
+      setRecalled(response.recalled_memories ?? []);
+      setMemoryBackend(response.memory_backend ?? "mysql");
       setMessages((current) => [
         ...current,
         {
@@ -83,7 +94,9 @@ export function FloatingChat() {
     }
   }
 
-  if (pathname === "/chat" || pathname === "/coach") return null;
+  // The dedicated chat page already is the assistant; a floating copy of it
+  // would just cover its own input.
+  if (pathname === "/chat") return null;
 
   return (
     <>
@@ -176,6 +189,33 @@ export function FloatingChat() {
                 >
                   Switch and ask there
                 </button>
+              </div>
+            )}
+
+            {recalled.length > 0 && (
+              <div className="mx-3 mb-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-2.5">
+                <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--muted-strong)]">
+                  <span
+                    className="h-1.5 w-1.5 rounded-full"
+                    style={{
+                      background:
+                        memoryBackend === "hindsight"
+                          ? "var(--success)"
+                          : "var(--warning)",
+                    }}
+                  />
+                  Recalled from {memoryBackend === "hindsight" ? "Hindsight" : "MySQL"} memory
+                </p>
+                <ul className="space-y-1">
+                  {recalled.slice(0, 3).map((memory, index) => (
+                    <li
+                      key={index}
+                      className="text-[11px] leading-4 text-[var(--muted-strong)]"
+                    >
+                      • {memory.content}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 

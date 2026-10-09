@@ -21,6 +21,10 @@ export interface Meeting {
   created_at: string;
   has_transcript: boolean;
   has_summary: boolean;
+  project_id: string | null;
+  project_name: string | null;
+  team_id: string | null;
+  team_name: string | null;
 }
 
 export interface StatusChange {
@@ -93,12 +97,19 @@ export interface ProcessResult {
   tokens_used: number | null;
 }
 
+export interface RecalledMemory {
+  content: string;
+  created_at: string | null;
+}
+
 export interface ChatResponse {
   meeting_id: string;
   answer: string;
   tokens_used: number | null;
   context_switch_required: boolean;
   pending_meeting_id: string | null;
+  memory_backend: string;
+  recalled_memories: RecalledMemory[];
 }
 
 export interface ChatMessage {
@@ -122,6 +133,9 @@ function readError(body: unknown, fallback: string): string {
             : String(d),
         )
         .join("; ");
+    }
+    if (detail && typeof detail === "object" && "message" in detail) {
+      return String((detail as { message: unknown }).message);
     }
   }
   return fallback;
@@ -151,6 +165,9 @@ export function setToken(token: string | null): void {
 }
 
 export class ApiError extends Error {
+  /** Structured `detail` when the API returned an object, e.g. speaker lists. */
+  payload: Record<string, unknown> | null = null;
+
   constructor(
     message: string,
     public status: number,
@@ -193,10 +210,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(
+    const apiError = new ApiError(
       readError(body, `Request failed with status ${res.status}`),
       res.status,
     );
+    const detail =
+      body && typeof body === "object" && "detail" in body
+        ? (body as { detail: unknown }).detail
+        : null;
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+      apiError.payload = detail as Record<string, unknown>;
+    }
+    throw apiError;
   }
 
   if (res.status === 204) return undefined as T;
@@ -264,20 +289,43 @@ export const authApi = {
   me: () => request<AuthUser>("/auth/me"),
 };
 
-export const api = {
-  health: () => request<Record<string, unknown>>("/health"),
+export interface HealthStatus {
+  // "degraded" means the API is serving but a dependency is down; `hint` says
+  // which one and what to do about it.
+  status: "ok" | "degraded";
+  hint: string | null;
+  database_reachable: boolean;
+  hindsight_integrated: boolean;
+  memory_backend: string;
+  [key: string]: unknown;
+}
 
-  listMeetings: () => request<Meeting[]>("/meetings"),
+export const api = {
+  health: () => request<HealthStatus>("/health"),
+
+  // The backend caps this at 200 however high the caller asks.
+  listMeetings: (limit?: number) =>
+    request<Meeting[]>(`/meetings${limit ? `?limit=${limit}` : ""}`),
 
   joinMeeting: (payload: {
     meeting_url: string;
     consent_acknowledged: boolean;
     title?: string;
     bot_name?: string;
+    project_id?: string;
+    team_id?: string;
   }) =>
     request<Meeting>("/meetings/join", {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+
+  // File an existing meeting under a project (null un-files it). Commitments
+  // from that meeting move with it.
+  setMeetingProject: (id: string, projectId: string | null) =>
+    request<Meeting>(`/meetings/${id}/project`, {
+      method: "PATCH",
+      body: JSON.stringify({ project_id: projectId }),
     }),
 
   getMeeting: (id: string, includeTranscript = false) =>
@@ -292,6 +340,17 @@ export const api = {
     request<ProcessResult>(`/meetings/${id}/process${force ? "?force=true" : ""}`, {
       method: "POST",
     }),
+
+  deleteMeeting: (id: string) =>
+    request<{
+      deleted: boolean;
+      meeting_id: string;
+      title: string;
+      commitments_removed: number;
+      coaching_notes_removed: number;
+      memory_bank_dropped: boolean;
+      calendar_events_kept: number;
+    }>(`/meetings/${id}`, { method: "DELETE" }),
 
   leaveMeeting: (id: string) =>
     request<MeetingStatusResponse>(`/meetings/${id}/leave`, { method: "POST" }),
@@ -423,6 +482,8 @@ export interface Finding {
   meeting_title: string | null;
   evidence: string | null;
   due_at: string | null;
+  project_id: string | null;
+  project_name: string | null;
   related: { commitment_id?: string; role?: string; text?: string; due_at?: string | null; meeting_title?: string | null; evidence?: string | null }[];
 }
 
@@ -440,6 +501,10 @@ export interface Commitment {
   project_id: string | null;
   supersedes_id: string | null;
   superseded_by_id: string | null;
+  confirmed: boolean;
+  // Present on /progress rows; the commitments list omits them.
+  created_at?: string | null;
+  completed_at?: string | null;
 }
 
 export interface TimelineEvent {
@@ -546,8 +611,101 @@ export const promiseApi = {
       method: "POST",
       body: JSON.stringify({ status, confirmed: true }),
     }),
+  // Settle a date that moved without being announced: hold the agreed date,
+  // or accept the new one as a real decision.
+  resolveChange: (id: string, keep: "original" | "new") =>
+    request<Commitment>(`/promisemirror/commitments/${id}/resolve-change`, {
+      method: "POST",
+      body: JSON.stringify({ keep }),
+    }),
   sync: (meetingId: string) =>
     request<Record<string, number>>(`/promisemirror/sync/${meetingId}`, { method: "POST" }),
+};
+
+export interface TeamSummary {
+  id: string;
+  name: string;
+  role: string;
+  member_count: number;
+  meeting_count: number;
+  is_owner: boolean;
+}
+
+export interface TeamMemberRow {
+  user_id: string;
+  name: string | null;
+  email: string;
+  role: string;
+  is_you: boolean;
+}
+
+export interface TeamInvite {
+  token: string;
+  expires_at: string;
+  max_uses: number;
+  uses: number;
+  url: string;
+}
+
+export const teamApi = {
+  list: () => request<TeamSummary[]>("/teams"),
+  create: (name: string) =>
+    request<TeamSummary>("/teams", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  members: (id: string) => request<TeamMemberRow[]>(`/teams/${id}/members`),
+  createInvite: (id: string) =>
+    request<TeamInvite>(`/teams/${id}/invites`, { method: "POST" }),
+  revokeInvites: (id: string) =>
+    request<{ revoked: number }>(`/teams/${id}/invites/revoke`, { method: "POST" }),
+  join: (token: string) =>
+    request<TeamSummary>("/teams/join", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
+  leave: (id: string) =>
+    request<{ left: boolean }>(`/teams/${id}/leave`, { method: "POST" }),
+};
+
+export interface PrioritySender {
+  id: string;
+  pattern: string;
+  label: string | null;
+}
+
+export interface InboxEmail {
+  id: string;
+  sender: string;
+  sender_name: string | null;
+  subject: string | null;
+  received_at: string | null;
+  matched_pattern: string | null;
+  summary: string | null;
+  highlights: string[];
+  urgent: boolean;
+  urgency_reason: string | null;
+  read: boolean;
+}
+
+export const inboxApi = {
+  senders: () => request<PrioritySender[]>("/inbox/senders"),
+  addSender: (pattern: string, label?: string) =>
+    request<PrioritySender>("/inbox/senders", {
+      method: "POST",
+      body: JSON.stringify({ pattern, label: label || null }),
+    }),
+  removeSender: (id: string) =>
+    request<{ deleted: boolean }>(`/inbox/senders/${id}`, { method: "DELETE" }),
+  list: (unreadOnly = false) =>
+    request<InboxEmail[]>(`/inbox${unreadOnly ? "?unread_only=true" : ""}`),
+  markRead: (id: string, read = true) =>
+    request<InboxEmail>(`/inbox/${id}/read?read=${read}`, { method: "POST" }),
+  sync: () =>
+    request<{ synced: number; new: number; commitments: number; message: string | null }>(
+      "/inbox/sync",
+      { method: "POST" },
+    ),
 };
 
 export const projectApi = {
@@ -562,10 +720,18 @@ export const projectApi = {
 export const markupApi = {
   plans: () => request<PrepPlan[]>("/markup/plans"),
   plan: (id: string) => request<PrepPlan>(`/markup/plans/${id}`),
-  prepareExisting: (projectId: string | null, title: string) =>
+  prepareExisting: (
+    projectId: string | null,
+    title: string,
+    meetingId?: string | null,
+  ) =>
     request<PrepPlan>("/markup/prepare/existing", {
       method: "POST",
-      body: JSON.stringify({ project_id: projectId, title }),
+      body: JSON.stringify({
+        project_id: projectId,
+        title,
+        meeting_id: meetingId || null,
+      }),
     }),
   prepareNew: (intake: Record<string, string | null>) =>
     request<PrepPlan>("/markup/prepare/new", {
@@ -611,9 +777,14 @@ export const markupApi = {
       }),
     }),
   liveAssistStatus: (planId: string) =>
-    request<{ enabled: boolean; state: "off" | "listening" | "waiting" | "ready"; question: string | null; answer: string | null }>(
-      `/markup/plans/${planId}/live-assist`,
-    ),
+    request<{
+      enabled: boolean;
+      state: "off" | "listening" | "waiting" | "ready" | "not_live";
+      question: string | null;
+      answer: string | null;
+      message?: string;
+      meeting_status?: string | null;
+    }>(`/markup/plans/${planId}/live-assist`),
 };
 
 export const coachApi = {
@@ -646,83 +817,18 @@ export const progressApi = {
   },
 };
 
-// --- My Team (manager-only, read-only) ------------------------------------
+// --- memory status (public: no token required) ----------------------------
 
-export interface TeamMemberRollup {
-  user_id: string | null;
-  name: string;
-  email: string;
-  role: string;
-  is_you: boolean;
-  total: number;
-  pending: number;
-  completed: number;
-  overdue: number;
-  next_due: string | null;
-  percent: number;
+export interface MemoryStatus {
+  backend: "hindsight" | "mysql";
+  hindsight_integrated: boolean;
+  requested: string;
+  llm_provider: string | null;
+  llm_model: string | null;
+  memory_banks: number | null;
+  note: string;
 }
 
-export interface TeamOverview {
-  manager: { id: string; name: string };
-  members: TeamMemberRollup[];
-  totals: { people: number; pending: number; completed: number; overdue: number };
-}
-
-export interface TeamCommitment {
-  id: string;
-  kind: string;
-  text: string;
-  status: string;
-  spoken_owner: string | null;
-  assigned_to: string | null;
-  assigned_user_id: string | null;
-  due_at: string | null;
-  due_text: string | null;
-  evidence: string | null;
-  meeting_id: string | null;
-  meeting_title: string | null;
-  superseded_by_id: string | null;
-  supersedes_id: string | null;
-}
-
-export interface TeamDeadlineItem {
-  id: string;
-  text: string;
-  due_at: string;
-  assigned_to: string;
-  assigned_user_id: string | null;
-  meeting_id: string | null;
-}
-
-export interface TeamProjectRollup {
-  project_id: string | null;
-  project_name: string;
-  total: number;
-  completed: number;
-  pending: number;
-  overdue: number;
-  percent: number;
-}
-
-export const teamApi = {
-  overview: (projectId?: string) =>
-    request<TeamOverview>(
-      `/team/overview${projectId ? `?project_id=${projectId}` : ""}`,
-    ),
-  commitments: (memberId?: string, statusFilter?: string) => {
-    const params = new URLSearchParams();
-    if (memberId) params.set("member_id", memberId);
-    if (statusFilter) params.set("status_filter", statusFilter);
-    const q = params.toString();
-    return request<TeamCommitment[]>(`/team/commitments${q ? `?${q}` : ""}`);
-  },
-  deadlines: () =>
-    request<{ overdue: TeamDeadlineItem[]; upcoming: TeamDeadlineItem[] }>(
-      "/team/deadlines",
-    ),
-  findings: (memberId?: string) =>
-    request<{ count: number; by_kind: Record<string, number>; findings: Finding[] }>(
-      `/team/findings${memberId ? `?member_id=${memberId}` : ""}`,
-    ),
-  projects: () => request<TeamProjectRollup[]>("/team/projects"),
+export const memoryApi = {
+  status: () => request<MemoryStatus>("/memory/status"),
 };

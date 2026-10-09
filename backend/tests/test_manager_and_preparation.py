@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import respx
@@ -25,7 +25,7 @@ from app.services.security import create_access_token, hash_password
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
-def _meeting(db, user_id: str) -> Meeting:
+def _meeting(db, user_id: str, status: str = "done") -> Meeting:
     meeting = Meeting(
         owner_id=user_id,
         bot_id="bot_prep_history",
@@ -33,7 +33,7 @@ def _meeting(db, user_id: str) -> Meeting:
         platform="google_meet",
         bot_name="MeetMind AI Notetaker",
         title="Earlier client review",
-        status="done",
+        status=status,
     )
     db.add(meeting)
     db.flush()
@@ -98,8 +98,8 @@ def test_new_meeting_preparation_uses_private_coaching(client, db, user) -> None
     assert "Lead with the recommendation" in prompt
 
 
-def test_personal_progress_excludes_reports_and_team_section_includes_them(db) -> None:
-    """A manager's personal dashboard stays personal; the team has its own view."""
+def test_personal_progress_excludes_reports(db) -> None:
+    """A manager's dashboard is their own work only, never their reports'."""
     manager = User(
         email="manager@example.com",
         name="Manager",
@@ -127,7 +127,7 @@ def test_personal_progress_excludes_reports_and_team_section_includes_them(db) -
         text="Send the final launch checklist",
         owner_name="Employee",
         status="pending",
-        due_at=datetime.now(timezone.utc) + timedelta(days=2),
+        due_at=datetime.now(UTC) + timedelta(days=2),
     )
     db.add(commitment)
     db.commit()
@@ -136,22 +136,15 @@ def test_personal_progress_excludes_reports_and_team_section_includes_them(db) -
     token = create_access_token(get_settings(), manager.id, manager.email)
     client.headers.update({"Authorization": f"Bearer {token}"})
 
-    # Personal view: the report's work must not appear here.
+    # The report's work must not appear on the manager's own dashboard.
     personal = client.get("/progress")
     assert personal.status_code == 200
     assert personal.json()["totals"]["pending"] == 0
 
-    # Team view: it must.
-    overview = client.get("/team/overview").json()
-    employee_row = next(m for m in overview["members"] if m["user_id"] == employee.id)
-    assert employee_row["pending"] == 1
-    assert overview["totals"]["pending"] == 1
-
-    deadlines = client.get("/team/deadlines").json()
-    assert any(d["text"] == "Send the final launch checklist" for d in deadlines["upcoming"])
-
-    projects = client.get("/team/projects").json()
-    assert any(p["project_name"] == "Employee Project" for p in projects)
+    # Nor on their own promises list.
+    promises = client.get("/promisemirror/commitments")
+    assert promises.status_code == 200
+    assert promises.json() == []
 
 
 def test_manager_cannot_close_a_reports_commitment(db) -> None:
@@ -204,24 +197,6 @@ def test_manager_cannot_close_a_reports_commitment(db) -> None:
         ).status_code
         == 200
     )
-
-
-def test_employee_cannot_reach_team_endpoints(db) -> None:
-    solo = User(
-        email="solo@example.com",
-        name="Solo",
-        role="employee",
-        password_hash=hash_password("solopass12345"),
-    )
-    db.add(solo)
-    db.commit()
-
-    client = TestClient(app)
-    client.headers.update(
-        {"Authorization": f"Bearer {create_access_token(get_settings(), solo.id, solo.email)}"}
-    )
-    for path in ["/team/overview", "/team/commitments", "/team/deadlines", "/team/projects"]:
-        assert client.get(path).status_code == 403, path
 
 
 @respx.mock
@@ -329,7 +304,7 @@ def test_live_answer_uses_preparation_and_practice(client, db, user) -> None:
 
 @respx.mock
 def test_private_live_assist_answers_after_two_seconds(client, db, user) -> None:
-    meeting = _meeting(db, user.id)
+    meeting = _meeting(db, user.id, status="in_call_recording")
     db.add(
         Transcript(
             meeting_id=meeting.id,
@@ -341,7 +316,7 @@ def test_private_live_assist_answers_after_two_seconds(client, db, user) -> None
                 "participant_email": None,
                 "text": "What data should we collect?",
                 "end": 18.2,
-                "received_at": (datetime.now(timezone.utc) - timedelta(seconds=3)).isoformat(),
+                "received_at": (datetime.now(UTC) - timedelta(seconds=3)).isoformat(),
             }],
         )
     )

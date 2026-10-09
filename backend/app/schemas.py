@@ -8,18 +8,40 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Supported meeting platforms and the URL shapes Recall accepts.
-MEETING_URL_PATTERNS: dict[str, re.Pattern[str]] = {
-    "google_meet": re.compile(
-        r"^https://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}(\?.*)?$", re.I
-    ),
-    "zoom": re.compile(r"^https://([a-z0-9-]+\.)?zoom\.us/[jw]/\d+", re.I),
-    "teams": re.compile(r"^https://teams\.(microsoft|live)\.com/", re.I),
+# One platform can be written several ways, so each name owns a list of
+# shapes. The returned name is what Recall is told, so it must stay one of
+# Recall's own platform identifiers no matter which spelling matched.
+MEETING_URL_PATTERNS: dict[str, list[re.Pattern[str]]] = {
+    "google_meet": [
+        # Plain meet.google.com/abc-defg-hij, plus the /lookup/ aliases
+        # Calendar hands out, and any trailing query string.
+        re.compile(
+            r"^https://meet\.google\.com/(lookup/[a-z0-9_-]+|[a-z]{3}-[a-z]{4}-[a-z]{3})"
+            r"(\?.*)?$",
+            re.I,
+        )
+    ],
+    "zoom": [
+        # /j/, /w/ and /s/ are join links; /my/ is a personal room.
+        re.compile(r"^https://([a-z0-9.-]+\.)?zoom\.(us|com)/(j|w|s)/\d+", re.I),
+        re.compile(r"^https://([a-z0-9.-]+\.)?zoom\.(us|com)/my/[a-z0-9._-]+", re.I),
+    ],
+    "teams": [re.compile(r"^https://teams\.(microsoft|live)\.com/", re.I)],
+    "webex": [re.compile(r"^https://([a-z0-9-]+\.)?webex\.com/", re.I)],
+    "slack": [re.compile(r"^https://app\.slack\.com/huddle/", re.I)],
+    "goto": [
+        re.compile(r"^https://(www\.)?(gotomeet\.me|goto\.com|gotomeeting\.com)/", re.I)
+    ],
 }
+
+# What to tell someone whose link did not match. Kept next to the patterns so
+# the two cannot drift apart.
+SUPPORTED_PLATFORMS = "Google Meet, Zoom, Microsoft Teams, Webex, Slack huddles or GoTo"
 
 
 def detect_platform(url: str) -> str | None:
-    for platform, pattern in MEETING_URL_PATTERNS.items():
-        if pattern.match(url):
+    for platform, patterns in MEETING_URL_PATTERNS.items():
+        if any(pattern.match(url) for pattern in patterns):
             return platform
     return None
 
@@ -31,6 +53,8 @@ class JoinMeetingRequest(BaseModel):
     bot_name: str | None = Field(default=None, max_length=100)
     title: str | None = Field(default=None, max_length=512)
     project_id: str | None = None
+    # Record for a team: one bot covers everyone, instead of one each.
+    team_id: str | None = None
     # Recording consent is a hard gate, not a convenience flag (see README).
     consent_acknowledged: bool = Field(
         description=(
@@ -46,8 +70,8 @@ class JoinMeetingRequest(BaseModel):
         v = v.strip()
         if detect_platform(v) is None:
             raise ValueError(
-                "Unrecognised meeting URL. Expected a Google Meet "
-                "(https://meet.google.com/abc-defg-hij), Zoom, or Teams link."
+                f"Unrecognised meeting URL. Expected a link from {SUPPORTED_PLATFORMS}, "
+                "for example https://meet.google.com/abc-defg-hij"
             )
         return v
 
@@ -114,6 +138,12 @@ class MeetingOut(BaseModel):
     created_at: datetime
     has_transcript: bool = False
     has_summary: bool = False
+    # Which project this meeting belongs to, so history groups by workstream.
+    project_id: str | None = None
+    project_name: str | None = None
+    # Set when the meeting was recorded for a team rather than one person.
+    team_id: str | None = None
+    team_name: str | None = None
 
 
 class MeetingDetailOut(MeetingOut):
@@ -157,12 +187,23 @@ class ChatRequest(BaseModel):
     confirm_context_switch: bool = False
 
 
+class RecalledMemory(BaseModel):
+    """A memory that fed this answer, shown so the user can check the source."""
+
+    content: str
+    created_at: str | None = None
+
+
 class ChatResponse(BaseModel):
     meeting_id: str
     answer: str
     tokens_used: int | None = None
     context_switch_required: bool = False
     pending_meeting_id: str | None = None
+    # Which store answered, and what it returned. Reported from the live
+    # wiring, so it says "mysql" whenever Hindsight is unreachable.
+    memory_backend: str = "mysql"
+    recalled_memories: list[RecalledMemory] = []
 
 
 class ChatMessageOut(BaseModel):

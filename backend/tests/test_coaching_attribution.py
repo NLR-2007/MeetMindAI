@@ -4,12 +4,10 @@ from __future__ import annotations
 import json
 
 import httpx
-import pytest
 import respx
 
 from app.models import Meeting, Transcript, User
 from app.services.markup import split_transcript_by_speaker
-from app.services.security import hash_password
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -139,9 +137,10 @@ def test_review_refuses_when_the_user_never_spoke(client, db, user) -> None:
     resp = client.post(f"/coach/{meeting.id}/review", json={})
     assert resp.status_code == 409
     detail = resp.json()["detail"]
-    assert "Could not find you in this transcript" in detail
-    # It tells them who it did hear, so they can fix their aliases.
-    assert "Bunny Reddy" in detail
+    assert "Could not find you in this transcript" in detail["message"]
+    # It returns who it DID hear, so the UI can offer a one-click fix.
+    assert "Bunny Reddy" in detail["speakers"]
+    assert detail["your_aliases"] == ["Ghost"]
 
 
 def test_one_users_notes_are_invisible_to_another(client, other_client, db, user) -> None:

@@ -7,7 +7,7 @@ and deadlines.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -35,7 +35,7 @@ def _uuid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class TimestampMixin:
@@ -67,6 +67,81 @@ class User(Base, TimestampMixin):
         back_populates="owner", cascade="all, delete-orphan"
     )
     meetings: Mapped[list[Meeting]] = relationship(back_populates="owner")
+
+
+class Team(Base, TimestampMixin):
+    """A group of people who attend the same meetings.
+
+    A team exists for one reason: so a single bot can cover a meeting instead
+    of every attendee sending their own. It is explicitly NOT a visibility
+    grant - membership lets you read meetings the team recorded, and nothing
+    else. Promises, coaching and progress stay personal.
+    """
+
+    __tablename__ = "teams"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+
+    memberships: Mapped[list[TeamMembership]] = relationship(
+        back_populates="team", cascade="all, delete-orphan"
+    )
+    invites: Mapped[list[TeamInvite]] = relationship(
+        back_populates="team", cascade="all, delete-orphan"
+    )
+    meetings: Mapped[list[Meeting]] = relationship(back_populates="team")
+
+
+class TeamMembership(Base, TimestampMixin):
+    """One person's place in one team."""
+
+    __tablename__ = "team_memberships"
+    __table_args__ = (UniqueConstraint("team_id", "user_id", name="uq_team_member"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(
+        ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # "owner" can invite and remove; "member" can do neither.
+    role: Mapped[str] = mapped_column(String(16), default="member", nullable=False)
+    # Meetings recorded before this moment stay invisible: joining a team must
+    # never hand over conversations the person was not part of.
+    joined_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+    team: Mapped[Team] = relationship(back_populates="memberships")
+    user: Mapped[User] = relationship()
+
+
+class TeamInvite(Base, TimestampMixin):
+    """A link that lets someone join a team.
+
+    Expiring and revocable on purpose: an invite link is a credential, and one
+    that works forever is a standing invitation to everyone it is forwarded to.
+    """
+
+    __tablename__ = "team_invites"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    team_id: Mapped[str] = mapped_column(
+        ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # The secret in the URL. Unique so a lookup cannot collide.
+    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    created_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    max_uses: Mapped[int] = mapped_column(Integer, default=25, nullable=False)
+    uses: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    team: Mapped[Team] = relationship(back_populates="invites")
 
 
 class Project(Base, TimestampMixin):
@@ -102,10 +177,18 @@ class Meeting(Base, TimestampMixin):
 
     consent_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Who dispatched the bot. Still one person, even for a team meeting:
+    # somebody pressed the button and consented to the recording.
     owner_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"))
+    # Set when the meeting belongs to a team: every member may then read it,
+    # while promises and coaching stay scoped to each person individually.
+    team_id: Mapped[str | None] = mapped_column(
+        ForeignKey("teams.id", ondelete="SET NULL"), index=True
+    )
 
     owner: Mapped[User | None] = relationship(back_populates="meetings")
+    team: Mapped[Team | None] = relationship(back_populates="meetings")
     project: Mapped[Project | None] = relationship(back_populates="meetings")
     participants: Mapped[list[Participant]] = relationship(
         back_populates="meeting", cascade="all, delete-orphan"
@@ -195,6 +278,10 @@ class ActionItem(Base, TimestampMixin):
     owner_name: Mapped[str | None] = mapped_column(String(255))
     due_text: Mapped[str | None] = mapped_column(String(255))
     done: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Who held this before it changed hands in the meeting. With owner_name
+    # set, someone took it over; with owner_name null, they gave it up and
+    # nobody picked it up.
+    reassigned_from: Mapped[str | None] = mapped_column(String(255))
 
     meeting: Mapped[Meeting] = relationship(back_populates="action_items")
 
@@ -259,6 +346,66 @@ class Calendar(Base, TimestampMixin):
     owner_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
 
+class PrioritySender(Base, TimestampMixin):
+    """An address or domain whose mail actually matters.
+
+    Early-stage teams run on shared mailboxes drowning in newsletters, so the
+    one message from a client gets lost. Rather than trying to classify every
+    email, the user names who counts and everything else is ignored - a
+    smaller, honest promise than "we will work out what is important".
+    """
+
+    __tablename__ = "priority_senders"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "pattern", name="uq_priority_sender"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Either a full address ("ravi@acme.com") or a bare domain ("acme.com").
+    pattern: Mapped[str] = mapped_column(String(255), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255))
+
+
+class InboundEmail(Base, TimestampMixin):
+    """A message from a priority sender, with what MeetMind made of it.
+
+    The body is deliberately NOT stored: the summary and any extracted
+    commitments are what the product needs, and keeping full mail content
+    would make this a mail archive with all the obligations that implies.
+    """
+
+    __tablename__ = "inbound_emails"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "gmail_id", name="uq_inbound_email"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    owner_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    gmail_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    thread_id: Mapped[str | None] = mapped_column(String(64))
+    sender: Mapped[str] = mapped_column(String(320), nullable=False)
+    sender_name: Mapped[str | None] = mapped_column(String(255))
+    subject: Mapped[str | None] = mapped_column(String(998))
+    received_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    # Which priority rule matched, so the user can see why it was surfaced.
+    matched_pattern: Mapped[str | None] = mapped_column(String(255))
+
+    summary: Mapped[str | None] = mapped_column(Text)
+    # Short bullet list of what actually matters in the message.
+    highlights: Mapped[list[str] | None] = mapped_column(JSON)
+    # True when the model judged it time-sensitive, with why in `urgency_reason`.
+    urgent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    urgency_reason: Mapped[str | None] = mapped_column(Text)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    owner: Mapped[User] = relationship()
+
+
 class Memory(Base, TimestampMixin):
     """Backing table for MemoryService.
 
@@ -304,6 +451,9 @@ class Commitment(Base, TimestampMixin):
     kind: Mapped[str] = mapped_column(String(24), default="promise")  # promise|decision|question
     text: Mapped[str] = mapped_column(Text, nullable=False)
     owner_name: Mapped[str | None] = mapped_column(String(255))
+    # Who held this before it changed hands. owner_name set means it was
+    # handed over; owner_name null means it was dropped and left unclaimed.
+    reassigned_from: Mapped[str | None] = mapped_column(String(255))
     due_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     due_text: Mapped[str | None] = mapped_column(String(255))
 

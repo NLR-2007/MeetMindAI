@@ -29,9 +29,23 @@
   --c-markup: #7657d6;
   --c-promises: #db5c7a;
   --c-progress: #168aa0;
-  --c-coach: #dc743b;
   --c-chat: #4768d7;
   --c-calendar: #218069;
+  /* Chart palette. Validated as a 4-slot categorical set against the white
+     card surface (all-pairs): lightness band, chroma floor and normal-vision
+     separation all pass. Two obligations came back from that check and are
+     honoured wherever these are used:
+       - CVD separation lands in the 6-8 band, so marks always carry a second
+         encoding: direct labels, a legend, and 2px gaps between segments.
+       - --chart-completed and --chart-upcoming fall below 3:1 on white, so
+         values are always printed as text, never conveyed by colour alone.
+     The app's own --success/--warning read grey or collide as chart fills,
+     which is why these are separate tokens rather than reused semantics. */
+  --chart-completed: #1baf7a;
+  --chart-pending: #635bff;
+  --chart-upcoming: #eda100;
+  --chart-overdue: #e34948;
+  --chart-track: #eef0f6;
   --shadow-sm: 0 1px 2px rgb(25 32 51 / 0.04), 0 5px 18px rgb(25 32 51 / 0.04);
   --shadow-md: 0 18px 55px -28px rgb(44 51 82 / 0.28);
   --font-display: var(--font-geist-sans);

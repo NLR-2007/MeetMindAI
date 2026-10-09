@@ -24,3 +24,6 @@ bot.json
 .next_stale_*/
 frontend/tsconfig.tsbuildinfo
 *.ngrok*
+
+# Local dev login details, never committed
+DEV_LOGIN.local.md

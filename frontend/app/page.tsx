@@ -146,6 +146,86 @@ export default function LandingPage() {
         </div>
       </section>
 
+
+      {/* The memory layer is the point of difference, so it gets its own
+          section rather than a bullet in a feature grid. */}
+      <section className="relative z-[1] border-y border-[var(--border)] bg-white/80 px-5 py-20 backdrop-blur sm:px-8 lg:px-10 lg:py-28">
+        <div className="mx-auto max-w-6xl">
+          <div className="mb-10 text-center">
+            <span className="eyebrow-pill">Powered by Hindsight</span>
+            <h2 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">
+              Most assistants summarise. This one remembers.
+            </h2>
+            <p className="mx-auto mt-3 max-w-2xl text-[15px] leading-7 text-[var(--muted-strong)]">
+              A summary describes one conversation. Hindsight gives MeetMind a
+              memory that carries decisions, commitments and project context
+              from one meeting into the next.
+            </p>
+          </div>
+
+          <div className="grid gap-5 lg:grid-cols-2">
+            <article className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+              <h3 className="text-sm font-bold uppercase tracking-[0.12em] text-[var(--muted-strong)]">
+                Without memory
+              </h3>
+              <ol className="mt-4 space-y-3 text-sm text-[var(--muted-strong)]">
+                <li>Meeting ends</li>
+                <li>A summary is generated</li>
+                <li>Nobody opens it again</li>
+                <li>Next meeting starts from nothing</li>
+              </ol>
+            </article>
+
+            <article
+              className="rounded-2xl border p-6"
+              style={{
+                borderColor: "color-mix(in oklab, var(--accent) 35%, transparent)",
+                background: "var(--accent-soft)",
+              }}
+            >
+              <h3 className="text-sm font-bold uppercase tracking-[0.12em] text-[var(--accent)]">
+                With Hindsight
+              </h3>
+              <ol className="mt-4 space-y-3 text-sm">
+                <li>Decisions and commitments are retained</li>
+                <li>A later meeting recalls them semantically</li>
+                <li>Changed deadlines keep their original</li>
+                <li>Your next briefing is built from all of it</li>
+              </ol>
+            </article>
+          </div>
+
+          <div className="mt-6 grid gap-5 lg:grid-cols-2">
+            <article className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+              <h3 className="text-base font-semibold">Two stores, two jobs</h3>
+              <p className="mt-2 text-sm leading-6 text-[var(--muted-strong)]">
+                MySQL stays the source of truth for meetings, tasks, deadlines
+                and calendar events. Hindsight holds the decisions,
+                commitments, prior discussions and project context that need
+                semantic recall.
+              </p>
+              <p className="mt-3 text-[13px] leading-5 text-[var(--muted-strong)]">
+                Ask <em>&ldquo;what did we agree about the database?&rdquo;</em>{" "}
+                and keyword search returns noise. Memory returns the decision.
+              </p>
+            </article>
+
+            <article className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+              <h3 className="text-base font-semibold">Scoped, so nothing leaks</h3>
+              <p className="mt-2 text-sm leading-6 text-[var(--muted-strong)]">
+                Each meeting, project and user has its own memory bank.
+                Isolation is enforced before retrieval, not filtered afterwards,
+                so one project can never surface another&rsquo;s context.
+              </p>
+              <p className="mt-3 text-[13px] leading-5 text-[var(--muted-strong)]">
+                Every answer shows the memories it drew on, and the app reports
+                which store replied — including when it has fallen back.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
       <section id="how-it-works" className="relative z-[1] border-y border-[var(--border)] bg-white/80 px-5 py-20 backdrop-blur sm:px-8 lg:px-10 lg:py-28">
         <div className="mx-auto max-w-7xl">
           <div className="max-w-2xl">

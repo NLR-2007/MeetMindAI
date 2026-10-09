@@ -10,10 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import inspect, text  # noqa: E402
+from sqlalchemy import inspect, text
 
-from app.config import get_settings  # noqa: E402
-from app.db import engine, init_db  # noqa: E402
+from app.config import get_settings
+from app.db import engine, init_db
 
 COLUMNS = {
     "users": [

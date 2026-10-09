@@ -31,10 +31,31 @@ def test_detect_platform(url: str, expected: str | None) -> None:
 def test_health_reports_config(client) -> None:
     body = client.get("/health").json()
     assert body["status"] == "ok"
+    assert body["hint"] is None
     assert body["recall_region"] == "us-west-2"
     assert body["recall_api_key_present"] is True
     # Never claim Hindsight works until it does.
     assert body["hindsight_integrated"] is False
+
+
+def test_health_says_degraded_when_the_database_is_down(client, monkeypatch) -> None:
+    """A dead database must be named, not hidden behind a green "ok".
+
+    The app deliberately keeps serving when the database is unreachable, so
+    this endpoint is the only place the real cause shows up.
+    """
+    import app.db as db_module
+
+    class Unreachable:
+        def connect(self):
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(db_module, "engine", Unreachable())
+
+    body = client.get("/health").json()
+    assert body["status"] == "degraded"
+    assert body["database_reachable"] is False
+    assert "MySQL" in body["hint"]
 
 
 def test_join_rejects_unknown_url(client) -> None:

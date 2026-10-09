@@ -45,8 +45,23 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       router.replace("/login");
       return;
     }
-    refresh().finally(() => setChecking(false));
-  }, [refresh, router]);
+    // Every state update happens after an await, and only while still mounted:
+    // navigating away mid-check must not write into an unmounted tree.
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await authApi.me();
+        if (!cancelled) setUser(me);
+      } catch {
+        setToken(null);
+        if (!cancelled) setUser(null);
+      }
+      if (!cancelled) setChecking(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   useEffect(() => {
     if (!checking && !user) router.replace("/login");

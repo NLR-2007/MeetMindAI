@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,7 +25,7 @@ from app.models import (
     User,
 )
 from app.services import markup as markup_service
-from app.services import promisemirror
+from app.services import promisemirror, teams
 from app.services.groq_client import GroqError
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,8 @@ class ProjectCreate(BaseModel):
 
 class ExistingPlanRequest(BaseModel):
     project_id: str | None = None
+    # Prepare a follow-up to one specific past meeting.
+    meeting_id: str | None = None
     title: str | None = Field(default=None, max_length=512)
 
 
@@ -196,6 +198,11 @@ async def prepare_existing(
         if project is None or project.owner_id != user.id:
             raise HTTPException(status_code=404, detail="Unknown project")
 
+    if payload.meeting_id:
+        source = db.get(Meeting, payload.meeting_id)
+        if source is None or source.owner_id != user.id:
+            raise HTTPException(status_code=404, detail="Unknown meeting")
+
     if not settings.groq_api_key:
         raise HTTPException(status_code=503, detail="GROQ_API_KEY is not configured.")
 
@@ -206,6 +213,7 @@ async def prepare_existing(
             owner_user_id=user.id,
             project_id=payload.project_id,
             title=payload.title,
+            meeting_id=payload.meeting_id,
         )
     except GroqError as exc:
         raise HTTPException(status_code=502, detail=f"Groq error: {exc.detail}") from exc
@@ -375,9 +383,9 @@ def _seconds_between(earlier: Any, later: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     if a.tzinfo is None:
-        a = a.replace(tzinfo=timezone.utc)
+        a = a.replace(tzinfo=UTC)
     if b.tzinfo is None:
-        b = b.replace(tzinfo=timezone.utc)
+        b = b.replace(tzinfo=UTC)
     return abs((b - a).total_seconds())
 
 
@@ -491,17 +499,38 @@ async def live_assist_status(
     context = dict(plan.context or {})
     if not context.get("_live_assist_enabled") or not plan.meeting_id:
         return {"enabled": False, "state": "off", "question": None, "answer": None}
-    answering_own = bool(context.get("_live_assist_answer_own"))
 
     meeting = db.get(Meeting, plan.meeting_id)
     if meeting is None or meeting.owner_id != user.id:
         return {"enabled": False, "state": "off", "question": None, "answer": None}
+    # Live Assist only works on a call that is actually running: it reacts to
+    # utterances arriving now. Say so rather than appearing to listen forever.
+    live_states = {"joining_call", "in_waiting_room", "in_call_not_recording", "in_call_recording"}
+    if meeting.status not in live_states:
+        return {
+            "enabled": True,
+            "state": "not_live",
+            "question": None,
+            "answer": None,
+            "meeting_status": meeting.status,
+            "message": (
+                "This meeting has ended. Live Assist listens during a call — "
+                "pick a meeting that is currently running."
+            ),
+        }
+
     utterances = [
         item for item in ((meeting.transcript.utterances if meeting.transcript else None) or [])
         if item.get("received_at") and item.get("text")
     ]
     if not utterances:
-        return {"enabled": True, "state": "listening", "question": None, "answer": None}
+        return {
+            "enabled": True,
+            "state": "listening",
+            "question": None,
+            "answer": None,
+            "message": "Connected. Waiting for someone to speak.",
+        }
 
     # Recall streams speech in chunks, so one spoken question can arrive as
     # several utterances. Stitch together the trailing run from one speaker
@@ -544,13 +573,13 @@ async def live_assist_status(
 
     received_at = datetime.fromisoformat(str(latest["received_at"]).replace("Z", "+00:00"))
     if received_at.tzinfo is None:
-        received_at = received_at.replace(tzinfo=timezone.utc)
+        received_at = received_at.replace(tzinfo=UTC)
 
     # A question that does not end with "?" is probably still being spoken, so
     # give it longer before assuming the speaker has finished.
     finished = question.rstrip().endswith("?")
     silence_needed = SILENCE_SECONDS if finished else SILENCE_SECONDS_UNPUNCTUATED
-    quiet_for = (datetime.now(timezone.utc) - received_at).total_seconds()
+    quiet_for = (datetime.now(UTC) - received_at).total_seconds()
     if quiet_for < silence_needed:
         return {"enabled": True, "state": "waiting", "question": question, "answer": None}
 
@@ -597,9 +626,15 @@ async def review_meeting(
     settings: Settings = Depends(get_settings),
     user: User = Depends(current_user),
 ) -> dict[str, Any]:
-    """Compare preparation against what was actually said. Private to the user."""
+    """Compare preparation against what was actually said. Private to the user.
+
+    A team meeting can be reviewed by any member who was in the team when it
+    was recorded: each of them gets coaching on their own words only, and the
+    notes stay private to whoever asked. That is the point of the shared bot -
+    one recording, one review per person.
+    """
     meeting = db.get(Meeting, meeting_id)
-    if meeting is None or meeting.owner_id != user.id:
+    if meeting is None or not teams.can_read_meeting(db, meeting, user):
         raise HTTPException(status_code=404, detail=f"Unknown meeting_id {meeting_id}")
 
     plan = None
@@ -621,6 +656,17 @@ async def review_meeting(
         suggestions = await markup_service.coach_on_meeting(
             db, settings, meeting=meeting, plan=plan, user=user
         )
+    except markup_service.SpeakerNotFound as exc:
+        # 409 with the speakers, so the client can offer a one-click fix.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": str(exc),
+                "speakers": exc.speakers,
+                "your_aliases": user.display_names or [],
+                "hint": "Claim the name you are called in meetings.",
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except GroqError as exc:
@@ -808,7 +854,7 @@ def progress(
     """
     from app.services import team as team_service
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Personal dashboard: own work only. The team has its own section.
     visible = [user.id]
 
@@ -824,7 +870,7 @@ def progress(
     def _due(c: Commitment) -> datetime | None:
         if c.due_at is None:
             return None
-        return c.due_at if c.due_at.tzinfo else c.due_at.replace(tzinfo=timezone.utc)
+        return c.due_at if c.due_at.tzinfo else c.due_at.replace(tzinfo=UTC)
 
     pending = [c for c in commitments if c.status == "pending"]
     completed = [c for c in commitments if c.status == "completed"]
@@ -883,6 +929,11 @@ def progress(
             "due_at": d.isoformat() if d else None,
             "project_id": c.project_id,
             "meeting_id": c.source_meeting_id,
+            # When it was promised and when it was closed: the dashboard plots
+            # the two against each other to show whether the backlog is
+            # growing, which no single total can say.
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "completed_at": c.completed_at.isoformat() if c.completed_at else None,
         }
 
     return {

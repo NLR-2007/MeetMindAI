@@ -7,10 +7,10 @@ export function StatusBadge({ status }: { status: MeetingStatus }) {
 
   const tones: Record<string, string> = {
     idle: "bg-zinc-500/10 text-zinc-500 border-zinc-500/20",
-    active: "bg-amber-500/10 text-amber-600 border-amber-500/25 dark:text-amber-400",
-    recording: "bg-red-500/10 text-red-600 border-red-500/25 dark:text-red-400",
-    done: "bg-emerald-500/10 text-emerald-600 border-emerald-500/25 dark:text-emerald-400",
-    error: "bg-red-500/10 text-red-600 border-red-500/25 dark:text-red-400",
+    active: "bg-amber-500/10 text-amber-600 border-amber-500/25",
+    recording: "bg-red-500/10 text-red-600 border-red-500/25",
+    done: "bg-emerald-500/10 text-emerald-600 border-emerald-500/25",
+    error: "bg-red-500/10 text-red-600 border-red-500/25",
   };
 
   return (
@@ -63,7 +63,7 @@ export function ErrorBanner({
   return (
     <div
       role="alert"
-      className="flex items-start justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-300"
+      className="flex items-start justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700"
     >
       <span>{message}</span>
       {onDismiss && (

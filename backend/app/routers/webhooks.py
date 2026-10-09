@@ -15,7 +15,7 @@ unless ALLOW_UNVERIFIED_WEBHOOKS is explicitly enabled for local development.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -171,7 +171,7 @@ async def recall_realtime_webhook(
         "text": text,
         "start": ((words[0].get("start_timestamp") or {}).get("relative") if words else None),
         "end": ((words[-1].get("end_timestamp") or {}).get("relative") if words else None),
-        "received_at": datetime.now(timezone.utc).isoformat(),
+        "received_at": datetime.now(UTC).isoformat(),
     }
     transcript = meeting.transcript
     if transcript is None:

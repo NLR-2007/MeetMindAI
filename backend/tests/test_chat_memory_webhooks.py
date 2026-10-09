@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import respx
@@ -75,6 +75,66 @@ def test_hindsight_is_not_claimed_as_integrated(db) -> None:
     assert isinstance(service, MySQLMemoryService)
     assert service.is_persistent_memory_backend is False
     assert service.backend_name == "mysql"
+
+
+def test_configured_hindsight_url_is_probed_before_being_believed() -> None:
+    """A set HINDSIGHT_BASE_URL is not evidence that a server is running.
+
+    This shipped the wrong way round: startup trusted the env var, so /health
+    reported hindsight_integrated=true while nothing was listening and every
+    recall silently fell back to MySQL.
+    """
+    import app.main as main_module
+
+    # A port nothing listens on: the probe must say "no", not raise.
+    assert main_module._hindsight_reachable("http://127.0.0.1:1", timeout=1.0) is False
+
+
+def test_unreachable_hindsight_is_never_wired_up(monkeypatch) -> None:
+    """The real assertion is that nothing gets wired, not the return value.
+
+    _start_hindsight() returns None for an external URL either way, because no
+    embedded server object exists. What went wrong before was that it still
+    called set_hindsight_base_url(), which is what makes hindsight_active()
+    — and therefore /health — claim success.
+    """
+    import app.main as main_module
+    from app.services import memory as memory_module
+
+    # hindsight_enabled is derived from memory_backend, so set the field.
+    monkeypatch.setattr(main_module.settings, "memory_backend", "hindsight")
+    monkeypatch.setattr(
+        main_module.settings, "hindsight_base_url", "http://127.0.0.1:1"
+    )
+    monkeypatch.setattr(main_module, "_hindsight_reachable", lambda *a, **k: False)
+
+    wired: list[str | None] = []
+    monkeypatch.setattr(memory_module, "set_hindsight_base_url", wired.append)
+
+    main_module._start_hindsight()
+
+    assert wired == [], "An unreachable Hindsight URL must not be wired up"
+    assert memory_module.hindsight_active() is False
+
+
+def test_reachable_hindsight_is_wired_up(monkeypatch) -> None:
+    """The counterpart: when the probe succeeds, it must actually be used."""
+    import app.main as main_module
+    from app.services import memory as memory_module
+
+    monkeypatch.setattr(main_module.settings, "memory_backend", "hindsight")
+    monkeypatch.setattr(
+        main_module.settings, "hindsight_base_url", "http://memory.test:8888/"
+    )
+    monkeypatch.setattr(main_module, "_hindsight_reachable", lambda *a, **k: True)
+
+    wired: list[str | None] = []
+    monkeypatch.setattr(memory_module, "set_hindsight_base_url", wired.append)
+
+    main_module._start_hindsight()
+
+    # Trailing slash stripped, so url joining cannot produce a double slash.
+    assert wired == ["http://memory.test:8888"]
 
 
 # --- Chat ----------------------------------------------------------------
@@ -205,7 +265,7 @@ def test_webhook_accepts_valid_signature(client, db, user, monkeypatch) -> None:
                                                 "status": {"code": "in_call_recording"}}}
     )
     # Svix enforces replay protection, so the timestamp must be recent.
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     msg_id, timestamp = "msg_2", int(now.timestamp())
     signature = Webhook(secret).sign(msg_id, now, payload)
 

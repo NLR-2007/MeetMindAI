@@ -58,6 +58,30 @@ def owned_meeting(
     return meeting
 
 
+def readable_meeting(
+    meeting_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> Meeting:
+    """Fetch a meeting the caller may READ.
+
+    Wider than `owned_meeting`: a team meeting is readable by every member who
+    was already in the team when it was recorded, because they were in the
+    room and heard it. Destructive or billable actions still use
+    `owned_meeting`, so reading a colleague's meeting never implies being able
+    to delete it or spend tokens re-analysing it.
+    """
+    from app.services import teams as team_service
+
+    meeting = db.get(Meeting, meeting_id)
+    if meeting is None or not team_service.can_read_meeting(db, meeting, user):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown meeting_id {meeting_id}",
+        )
+    return meeting
+
+
 def owned_project(
     project_id: str,
     db: Session = Depends(get_db),

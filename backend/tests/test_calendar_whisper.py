@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -270,7 +271,6 @@ def test_reconnect_replaces_previous_calendar(client, db, user) -> None:
 
 
 def _seed_deadline(db, *, due_at, when_text="28-9-2026", owner_id=None):
-    from datetime import datetime, timezone
 
     from app.models import Deadline, Meeting
 
@@ -314,11 +314,11 @@ def test_push_without_date_is_refused(client, db, user) -> None:
 
 
 def test_push_without_connected_calendar_is_refused(client, db, user) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     deadline = _seed_deadline(
         db,
-        due_at=datetime(2026, 9, 28, tzinfo=timezone.utc),
+        due_at=datetime(2026, 9, 28, tzinfo=UTC),
         when_text="dl1",
         owner_id=user.id,
     )
@@ -329,13 +329,13 @@ def test_push_without_connected_calendar_is_refused(client, db, user) -> None:
 
 @respx.mock
 def test_push_creates_all_day_event(client, db, user) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     db.add(Calendar(recall_calendar_id="cal_w", email="a@b.com", owner_id=user.id,
                     google_refresh_token="rt_123", status="connected"))
     deadline = _seed_deadline(
         db,
-        due_at=datetime(2026, 9, 28, tzinfo=timezone.utc),
+        due_at=datetime(2026, 9, 28, tzinfo=UTC),
         when_text="dl2",
         owner_id=user.id,
     )
@@ -377,13 +377,13 @@ def test_push_creates_all_day_event(client, db, user) -> None:
 
 @respx.mock
 def test_push_is_idempotent(client, db, user) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     db.add(Calendar(recall_calendar_id="cal_i", email="a@b.com", owner_id=user.id,
                     google_refresh_token="rt", status="connected"))
     deadline = _seed_deadline(
         db,
-        due_at=datetime(2026, 9, 28, tzinfo=timezone.utc),
+        due_at=datetime(2026, 9, 28, tzinfo=UTC),
         when_text="dl3",
         owner_id=user.id,
     )
@@ -399,11 +399,11 @@ def test_push_is_idempotent(client, db, user) -> None:
 
 
 def test_resolve_due_date_handles_real_phrasings() -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.services.meeting_service import resolve_due_date
 
-    anchor = datetime(2026, 9, 27, tzinfo=timezone.utc)
+    anchor = datetime(2026, 9, 27, tzinfo=UTC)
     r = lambda iso, spoken: resolve_due_date(iso, spoken, anchor)  # noqa: E731
 
     # Spoken dates the model often refuses to normalise itself.

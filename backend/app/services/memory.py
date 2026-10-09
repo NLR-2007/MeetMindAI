@@ -237,6 +237,11 @@ def set_hindsight_base_url(base_url: str | None) -> None:
     _hindsight_base_url = base_url
 
 
+def hindsight_base_url() -> str | None:
+    """Where the live Hindsight server is, if one is wired up."""
+    return _hindsight_base_url
+
+
 def hindsight_active() -> bool:
     """True only when a live Hindsight client is actually wired up.
 

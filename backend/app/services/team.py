@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
@@ -42,9 +42,25 @@ def teammates(db: Session, user: User) -> list[User]:
     """Everyone whose names may be matched against this user's transcripts.
 
     For an employee that is their manager and their manager's other reports;
-    for a manager it is themselves and their reports. Restricting the candidate
-    pool is what prevents cross-team mapping.
+    for a manager it is themselves and their reports. People who share a Team
+    are candidates too, since they attend the same meetings and their names
+    are exactly the ones that appear in the transcript. Restricting the
+    candidate pool is what prevents cross-team mapping.
     """
+    from app.services import teams as team_rooms
+
+    found: dict[str, User] = {user.id: user}
+    for team_id in team_rooms.team_ids_for(db, user):
+        for member in team_rooms.members_of(db, team_id):
+            found[member.id] = member
+
+    for candidate in _reporting_line(db, user):
+        found[candidate.id] = candidate
+    return list(found.values())
+
+
+def _reporting_line(db: Session, user: User) -> list[User]:
+    """The manager/report candidates, independent of any team membership."""
     if user.role == MANAGER:
         rows = db.scalars(
             select(User).where(or_(User.id == user.id, User.manager_id == user.id))

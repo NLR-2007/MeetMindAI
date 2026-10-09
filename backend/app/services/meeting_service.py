@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -189,7 +188,7 @@ async def process_completed_meeting(
     try:
         analysis_anchor = meeting.started_at or meeting.created_at
         if analysis_anchor.tzinfo is None:
-            analysis_anchor = analysis_anchor.replace(tzinfo=timezone.utc)
+            analysis_anchor = analysis_anchor.replace(tzinfo=UTC)
         # Platform-supplied names are spelled correctly; the transcript's are not.
         known_names = [p.name for p in parsed.participants if p.name]
         analysis, tokens = await GroqClient(settings).analyse_meeting(
@@ -235,6 +234,7 @@ async def process_completed_meeting(
                 task=item.get("task") or "",
                 owner_name=item.get("owner"),
                 due_text=item.get("due"),
+                reassigned_from=item.get("reassigned_from"),
             )
         )
     for deadline in analysis["deadlines"]:
@@ -342,7 +342,7 @@ def _parse_iso_date(value: str | None) -> datetime | None:
         return None
     try:
         return datetime.strptime(value.strip()[:10], "%Y-%m-%d").replace(
-            tzinfo=timezone.utc
+            tzinfo=UTC
         )
     except ValueError:
         return None
@@ -381,7 +381,7 @@ def resolve_due_date(
         return None
 
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
 
     # Vague phrases ("soon") fuzzy-parse straight back to the anchor; that is
     # not a real date, so treat it as unresolved.

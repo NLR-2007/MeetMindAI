@@ -22,6 +22,9 @@ const KIND_STYLE: Record<CalendarEventKind, { color: string; label: string }> = 
   event: { color: "var(--c-calendar)", label: "Calendar event" },
 };
 
+// Each row is a sixth of the available height, which fits three chips.
+const CELL_ITEMS = 3;
+
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function ymd(d: Date): string {
@@ -89,8 +92,12 @@ export function MonthCalendar({
   const selectedItems = byDay.get(selected) ?? [];
 
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-sm)]">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-3.5">
+    // Height is pinned to the viewport on large screens so the grid, the
+    // weekday header and the selected-day panel all fit without the page
+    // scrolling. Small screens keep the natural height and scroll normally,
+    // which is the right behaviour on a phone.
+    <div className="flex flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-sm)] lg:h-[calc(100dvh-11rem)]">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-2.5">
         <div className="flex items-center gap-2">
           <button
             onClick={() =>
@@ -149,7 +156,9 @@ export function MonthCalendar({
         </div>
       </div>
 
-      <div className="grid grid-cols-7 border-b border-[var(--border)] px-2 pt-2 text-center">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="grid shrink-0 grid-cols-7 border-b border-[var(--border)] px-2 pt-2 text-center">
         {WEEKDAYS.map((d) => (
           <div
             key={d}
@@ -160,7 +169,7 @@ export function MonthCalendar({
         ))}
       </div>
 
-      <div className="grid grid-cols-7 gap-px bg-[var(--border)] p-px">
+      <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-6 gap-px overflow-hidden bg-[var(--border)] p-px">
         {grid.map((day) => {
           const key = ymd(day);
           const inMonth = day.getMonth() === cursor.getMonth();
@@ -172,12 +181,12 @@ export function MonthCalendar({
             <button
               key={key}
               onClick={() => setSelected(key)}
-              className={`min-h-[86px] bg-[var(--surface)] p-1.5 text-left align-top transition hover:bg-[var(--surface-2)] ${
+              className={`flex min-h-[72px] flex-col overflow-hidden bg-[var(--surface)] p-1 text-left align-top transition hover:bg-[var(--surface-2)] ${
                 inMonth ? "" : "opacity-45"
               } ${isSelected ? "ring-2 ring-inset ring-[var(--accent)]" : ""}`}
             >
               <span
-                className={`mb-1 inline-grid h-6 w-6 place-items-center rounded-full text-[11px] font-semibold ${
+                className={`mb-0.5 inline-grid h-5 w-5 shrink-0 place-items-center rounded-full text-[11px] font-semibold ${
                   isToday
                     ? "bg-[var(--accent)] text-[var(--accent-fg)]"
                     : "text-[var(--foreground)]"
@@ -186,8 +195,8 @@ export function MonthCalendar({
                 {day.getDate()}
               </span>
 
-              <span className="block space-y-0.5">
-                {dayItems.slice(0, 3).map((item) => (
+              <span className="block min-h-0 flex-1 space-y-px overflow-hidden">
+                {dayItems.slice(0, CELL_ITEMS).map((item) => (
                   <span
                     key={item.id}
                     title={item.title}
@@ -204,9 +213,9 @@ export function MonthCalendar({
                     <span className="truncate">{item.title}</span>
                   </span>
                 ))}
-                {dayItems.length > 3 && (
-                  <span className="block px-1 text-[10px] text-[var(--muted-strong)]">
-                    +{dayItems.length - 3} more
+                {dayItems.length > CELL_ITEMS && (
+                  <span className="block px-1 text-[10px] font-semibold text-[var(--muted-strong)]">
+                    +{dayItems.length - CELL_ITEMS} more
                   </span>
                 )}
               </span>
@@ -215,8 +224,10 @@ export function MonthCalendar({
         })}
       </div>
 
-      <div className="border-t border-[var(--border)] px-5 py-4">
-        <h3 className="mb-2 text-sm font-semibold">
+      </div>
+
+      <div className="flex min-h-0 shrink-0 flex-col border-t border-[var(--border)] px-5 py-3 lg:w-72 lg:border-l lg:border-t-0">
+        <h3 className="mb-2 shrink-0 text-sm font-semibold">
           {new Date(`${selected}T00:00:00`).toLocaleDateString(undefined, {
             weekday: "long",
             day: "numeric",
@@ -226,7 +237,7 @@ export function MonthCalendar({
         {selectedItems.length === 0 ? (
           <p className="text-sm text-[var(--muted-strong)]">Nothing on this day.</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
             {selectedItems.map((item) => {
               const style = KIND_STYLE[item.kind];
               const body = (
@@ -264,6 +275,7 @@ export function MonthCalendar({
             })}
           </ul>
         )}
+      </div>
       </div>
     </div>
   );

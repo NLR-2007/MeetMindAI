@@ -26,7 +26,7 @@ Return ONLY valid JSON with exactly this shape:
   "summary": string,
   "decisions": [string],
   "action_items": [{"task": string, "owner": string|null, "due": string|null,
-                    "due_date": string|null}],
+                    "due_date": string|null, "reassigned_from": string|null}],
   "deadlines": [{"what": string, "when": string, "date": string|null}],
   "participants": [string]
 }
@@ -40,6 +40,18 @@ Rules:
   ("Pani" -> "Bunny Reddy", "locus" -> "Lokesh"). Only do this when one
   participant is the obvious match; otherwise leave the owner null rather than
   picking between candidates. Never invent a person who is not on that list.
+- A task can change hands during one meeting. Read the whole transcript before
+  deciding who owns it, and report the FINAL state, not the first thing said:
+  * Someone takes it, then another person takes it over ("I'll build it by
+    Friday" ... "actually I'll handle that, you're busy") -> "owner" is the
+    person who ends up with it, "reassigned_from" is the person who had it.
+  * Someone gives it up and NOBODY accepts it ("I'm busy tomorrow, can someone
+    handle this?" with no taker) -> "owner" is null and "reassigned_from" is
+    the person who gave it up. Never leave it with someone who explicitly
+    handed it off, and never invent a taker.
+  * Nobody handed anything over -> "reassigned_from" is null. This is the
+    normal case; only set it when the transcript actually shows a handoff.
+- One task that moved is ONE action item with the final owner, not two items.
 - "due" and "when" keep the speaker's own wording (e.g. "next Friday", "28-9-2026").
 - "due_date" and "date" are the SAME deadline normalised to ISO 8601 YYYY-MM-DD.
   Day comes before month in ambiguous numeric dates such as 28-9-2026.
@@ -126,6 +138,28 @@ class GroqClient:
                 f"{choice.get('finish_reason')}). Increase GROQ_MAX_TOKENS.",
             )
         return content, tokens
+
+    async def json_completion(
+        self, system_prompt: str, user_content: str
+    ) -> dict[str, Any]:
+        """One prompt in, parsed JSON out.
+
+        For callers that define their own schema in the prompt rather than
+        reusing the meeting-analysis shape.
+        """
+        content, _ = await self._chat(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            json_mode=True,
+        )
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise GroqError(
+                200, f"Model did not return valid JSON: {content[:200]}"
+            ) from exc
 
     async def analyse_meeting(
         self,

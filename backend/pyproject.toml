@@ -1,0 +1,44 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".venv", "hindsight"]
+
+[tool.ruff.lint]
+# Correctness first: undefined names, dead bindings, bad imports, async
+# mistakes and obvious security slips. Style rules are left out on purpose —
+# they generate noise without catching bugs.
+select = [
+    "F",      # pyflakes: undefined names, unused imports and variables
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "I",      # import sorting
+    "B",      # bugbear: likely bugs
+    "ASYNC",  # blocking calls inside async functions
+    "S",      # bandit: security
+    "UP",     # pyupgrade
+    "RUF",
+]
+ignore = [
+    "E501",    # line length is formatting, not correctness
+    "B008",    # FastAPI's whole dependency system is Depends() in a default
+    "S101",    # assert is how the tests are written
+    "RUF012",  # SQLAlchemy/Pydantic class attributes are not ClassVar
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into internals deliberately, and migrations run top to bottom
+# with imports after a path fix-up.
+"tests/*" = ["S105", "S106", "S311", "SLF001", "E402"]
+"migrations/*" = ["E402", "S608"]
+
+[tool.ruff.lint.flake8-bugbear]
+# These are FastAPI dependency markers, not mutable default arguments.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.File",
+    "fastapi.Form",
+]

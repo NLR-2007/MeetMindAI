@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -33,6 +33,7 @@ class CommitmentOut(BaseModel):
     project_id: str | None = None
     supersedes_id: str | None = None
     superseded_by_id: str | None = None
+    confirmed: bool = True
 
 
 class StatusUpdate(BaseModel):
@@ -57,6 +58,7 @@ def _out(db: Session, c: Commitment) -> CommitmentOut:
         project_id=c.project_id,
         supersedes_id=c.supersedes_id,
         superseded_by_id=c.superseded_by_id,
+        confirmed=c.confirmed,
     )
 
 
@@ -144,14 +146,74 @@ def update_status(
         )
     if not payload.confirmed:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Status changes must be confirmed by the user.",
         )
 
     c.status = payload.status
-    c.completed_at = datetime.now(timezone.utc) if payload.status == "completed" else None
+    c.completed_at = datetime.now(UTC) if payload.status == "completed" else None
     db.flush()
     return _out(db, c)
+
+
+class ChangeResolution(BaseModel):
+    # Which date actually stands. "original" is the one that was agreed out
+    # loud; "new" accepts the quietly-changed one as a real decision.
+    keep: str = Field(pattern="^(original|new)$")
+
+
+@router.post("/commitments/{commitment_id}/resolve-change", response_model=CommitmentOut)
+def resolve_change(
+    commitment_id: str,
+    payload: ChangeResolution,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+) -> CommitmentOut:
+    """Settle a silently-changed deadline.
+
+    `commitment_id` is the newer version. Keeping "new" records that the change
+    was intended, which stops the alert. Keeping "original" reinstates the date
+    that was actually agreed and cancels the version nobody announced.
+
+    Either way the audit trail survives: nothing is deleted, only re-pointed.
+    """
+    replacement = db.get(Commitment, commitment_id)
+    if replacement is None:
+        raise HTTPException(status_code=404, detail=f"Unknown commitment {commitment_id}")
+    if not team.can_modify(user, replacement):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the person who owns this commitment can resolve its date.",
+        )
+    original = (
+        db.get(Commitment, replacement.supersedes_id)
+        if replacement.supersedes_id
+        else None
+    )
+    if original is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This commitment did not replace an earlier one, so there is nothing to resolve.",
+        )
+
+    if payload.keep == "new":
+        replacement.confirmed = True
+        resolved = replacement
+    else:
+        # The agreed date stands. The unannounced version is cancelled rather
+        # than removed, so the record still shows that it was attempted.
+        original.status = "pending"
+        original.superseded_by_id = None
+        original.confirmed = True
+        replacement.status = "cancelled"
+        replacement.confirmed = True
+        resolved = original
+
+    db.flush()
+    logger.info(
+        "Resolved silent change on %s: kept %s", commitment_id, payload.keep
+    )
+    return _out(db, resolved)
 
 
 @router.post("/sync/{meeting_id}")

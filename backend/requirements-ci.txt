@@ -1,0 +1,33 @@
+# CI dependencies: the same pins as requirements.txt, minus hindsight-all.
+#
+# hindsight-all pulls torch and transformers (~1.5GB). The test suite never
+# reaches a real Hindsight server — memory is mocked or falls back to MySQL —
+# so installing the model stack would add gigabytes per run and test nothing.
+# Memory wiring is covered separately against a stub.
+#
+# tests/test_requirements_parity.py fails if this file drifts from
+# requirements.txt, so the pins here cannot quietly fall behind.
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+httpx==0.28.1
+python-dotenv==1.0.1
+python-dateutil==2.9.0.post0
+
+# Database
+SQLAlchemy==2.0.36
+PyMySQL==1.1.1
+cryptography==44.0.0
+
+# Webhook signature verification
+svix==1.42.0
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
+respx==0.22.0
+
+# Linting (CI only)
+ruff==0.16.10

@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Stale build copies left behind when Windows locks .next
+/frontend/.next_old_*/
+/frontend/.next_stale_*/

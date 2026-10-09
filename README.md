@@ -30,11 +30,13 @@ Everything below has been verified end to end against live services, not mocks.
 | Mark Up — pre-meeting briefing and AI practice | ✅ |
 | **Live Assist** — drafts an answer when you are asked a question | ✅ |
 | Personal coaching, scoped to your own words | ✅ |
-| Manager / employee roles with read-only team view | ✅ |
+| **Silent deadline-change detection** — a date that moved without anyone saying so | ✅ |
+| **Commitment handoff** — a promise that changes hands, or is dropped unclaimed | ✅ |
+| Meetings filed under a project, so a series accumulates context | ✅ |
 | Google Calendar — deadlines pushed as events | ✅ |
 | Whisper fallback when Recall produces no transcript | ⚠️ tested with mocks only |
 
-**82 backend tests pass.** TypeScript and the production build are clean.
+**164 backend tests pass.** `ruff` is clean, ESLint is clean, and the production build and `tsc --noEmit` both pass. CI runs all of this on every push (see `.github/workflows/ci.yml`).
 
 ---
 
@@ -91,6 +93,7 @@ Then run the migrations, in order:
 .\.venv\Scripts\python.exe migrations\002_markup_promisemirror.py
 .\.venv\Scripts\python.exe migrations\003_roles_and_assignment.py
 .\.venv\Scripts\python.exe migrations\004_speaker_scoped_coaching.py
+.\.venv\Scripts\python.exe migrations\005_commitment_handoff.py
 ```
 
 They are idempotent and safe to re-run.
@@ -121,10 +124,10 @@ falls back to MySQL memory and `/health` reports
 
 ```powershell
 cd backend
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8001 --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000 --reload
 ```
 
-Check <http://127.0.0.1:8001/health> shows `"hindsight_integrated": true`.
+Check <http://127.0.0.1:8000/health> shows `"hindsight_integrated": true`.
 
 ### 6. Frontend
 
@@ -142,7 +145,7 @@ Open <http://localhost:3000>. Point it at the backend with
 Recall must reach your machine:
 
 ```powershell
-ngrok http 8001
+ngrok http 8000
 ```
 
 Put the HTTPS URL in `.env` as `PUBLIC_BASE_URL`, and register
@@ -378,20 +381,23 @@ Three details that cost real debugging time:
 3. Watch the transcript appear live on the meeting page
 4. Leave the meeting — with webhooks configured it processes itself
 5. **Mark Up → Review** compares what you planned with what you said
-6. **My Promises** shows commitments, including deadlines that moved
+6. **My Promises** shows commitments, including deadlines that moved — and
+   flags any that moved *without anyone saying so*
 
 ---
 
 ## Roles
 
-| Role | Sees |
-|---|---|
-| **Employee** | only their own meetings, promises, progress and coaching |
-| **Manager** | the same, plus **About My Team** — read-only |
+Everyone sees their own work and nobody else's — managers included. There is no
+team rollup: the product is a personal accountability record, not a reporting
+tool, and a manager's dashboard would have made it the latter.
 
 A manager **cannot** mark a report's task complete: once a commitment is
 assigned, only the assignee may close it. Recording a meeting does not make its
 promises yours.
+
+The manager relationship still matters, but only for **scoping name matches**:
+it is what lets "Bunny" in the transcript resolve to the right Bunny.
 
 Employees supply their manager's email at registration; that is what scopes
 name-matching, so a "Bunny" in another team can never be matched.
@@ -404,7 +410,7 @@ name-matching, so a "Bunny" in another team can never be matched.
 |---|---|---|
 | `POST` | `/auth/register`, `/auth/login` | Accounts and JWTs |
 | `GET` | `/auth/me`, `/auth/team` | Profile, visible team |
-| `POST` | `/meetings/join` | Dispatch the notetaker |
+| `POST` | `/meetings/join` | Dispatch the notetaker (optionally under a `project_id` you own) |
 | `GET` | `/meetings`, `/meetings/{id}` | History and detail |
 | `POST` | `/meetings/{id}/process` | Transcript + Groq analysis |
 | `POST` | `/meetings/{id}/chat` | Ask about one meeting |
@@ -414,12 +420,32 @@ name-matching, so a "Bunny" in another team can never be matched.
 | `POST` | `/markup/prepare/existing`, `/new` | Build a briefing |
 | `POST` | `/markup/plans/{id}/practice` | AI rehearsal |
 | `GET` | `/markup/plans/{id}/live-assist` | Live Assist state |
-| `POST` | `/coach/{meeting_id}/review` | Speaker-scoped coaching |
-| `GET` | `/progress`, `/team/overview` | Dashboards |
+| `POST` | `/coach/{meeting_id}/review` | Speaker-scoped coaching (surfaced in Mark Up → Review) |
+| `POST` | `/promisemirror/commitments/{id}/resolve-change` | Settle a silent date change |
+| `GET` | `/progress` | Personal dashboard |
 
 ---
 
 ## Design decisions
+
+**A silent change is not a decision.** When a deadline is restated differently
+in a later meeting and nobody says it changed, MeetMind does not quietly adopt
+the new date. It raises a high-severity alert naming the date that was actually
+agreed and both meetings involved, and asks the owner which one stands. A
+change announced out loud ("we moved it to the nineteenth") is recorded as an
+ordinary revision instead — the distinction is drawn from the transcript, by
+looking for change language in the sentences that discuss that commitment.
+
+**A promise that changes hands stops being yours.** "I'll build it tomorrow"
+makes it yours; "I'm busy, can someone take this?" does not quietly leave it
+with you. Extraction reports the *final* owner plus `reassigned_from`, and a
+change of owner supersedes the original exactly as a date change does, with
+the original kept as the audit trail. The hard case is the one with no taker:
+owner `null` with `reassigned_from` set is a **released** promise, reported at
+high severity, because the person who put it down believes they are free of it
+and nobody has picked it up. A `null` owner *without* `reassigned_from` means
+only that this meeting did not restate ownership, so the existing owner
+stands — silence is never read as a handoff.
 
 **Refuse rather than guess.** An ambiguous speaker name leaves a commitment
 unassigned. Coaching is refused outright if you cannot be found in the
@@ -440,6 +466,38 @@ to Hindi mid-meeting on accented English and emitted Devanagari.
 
 ---
 
+## Development
+
+The same four checks CI runs, runnable locally:
+
+```powershell
+# Backend: lint, then tests (SQLite + mocks, no services or secrets needed)
+cd backend
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m pytest -q
+
+# Frontend: lint, build, then type check
+cd ..rontend
+npx eslint .
+npm run build
+npx tsc --noEmit
+```
+
+`tsc --noEmit` must run **after** `npm run build`: `tsconfig.json` includes
+`.next/types` and `next-env.d.ts`, both generated, so a clean checkout has
+neither.
+
+CI installs `backend/requirements-ci.txt` rather than `requirements.txt`, to
+skip `hindsight-all`'s torch/transformers download (~1.5GB) that the mocked
+tests never touch. `tests/test_requirements_parity.py` fails if the two files
+drift apart, so the CI pins cannot quietly fall behind the real ones.
+
+A third CI job greps tracked files for credential-shaped strings
+(`gsk_…`, `nvapi-…`, `whsec_…`, `GOCSPX-…`) and fails the build if one is ever
+committed. Real keys live in `.env`, which is gitignored.
+
+---
+
 ## Known limitations
 
 - **Speech-to-text mangles product names and Indian names** — "Hindsight" →
@@ -452,3 +510,10 @@ to Hindi mid-meeting on accented English and emitted Devanagari.
 - **Live Assist is heuristic.** It detects questions by sentence shape and
   addressee by name, so an unaddressed question may still prompt an answer.
 - **Free ngrok URLs change on restart**, breaking webhooks until re-registered.
+- **Silent-change detection reads change language from the transcript.** If
+  someone announces a new date in wording the detector does not recognise, the
+  change is reported as silent. That errs towards asking, which is the safer
+  direction, but it is a heuristic over a transcript, not a record of intent.
+- **The app is light-theme only.** `color-scheme` is pinned to light and there
+  are no dark tokens, so dark-mode styling was removed rather than left
+  half-applied.
