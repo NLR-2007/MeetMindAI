@@ -1,6 +1,8 @@
 """Authentication and tenant-isolation tests."""
 from __future__ import annotations
 
+from sqlalchemy import select
+
 from app.models import Meeting
 
 GOOD_URL = "https://meet.google.com/abc-defg-hij"
@@ -174,14 +176,38 @@ def test_join_stamps_the_caller_as_owner(client, db, user) -> None:
 # --- team membership at sign-up -------------------------------------------
 
 
-def test_employee_must_name_a_manager(anon_client) -> None:
-    """An employee with no manager has no team, so nothing can be scoped."""
+def test_the_very_first_person_can_sign_up(anon_client) -> None:
+    """On an empty database nobody has a manager yet.
+
+    Requiring one made the product impossible to start using: a new
+    deployment has no manager accounts, so every registration was rejected
+    and the sign-up button sat permanently disabled. Teams now does the
+    scoping that the reporting line used to.
+    """
     resp = anon_client.post(
         "/auth/register",
-        json={"email": "orphan@example.com", "password": "strongpass123"},
+        json={"email": "first@example.com", "password": "strongpass123"},
     )
-    assert resp.status_code == 422
-    assert "manager" in resp.text.lower()
+    assert resp.status_code == 201, resp.text
+
+
+def test_someone_with_no_manager_sees_only_their_own_work(anon_client, db) -> None:
+    """Dropping the requirement must not widen what anyone can see."""
+    from app.models import User
+    from app.services.team import teammates
+
+    anon_client.post(
+        "/auth/register",
+        json={"email": "solo@example.com", "password": "strongpass123"},
+    )
+    anon_client.post(
+        "/auth/register",
+        json={"email": "stranger@example.com", "password": "strongpass123"},
+    )
+    solo = db.scalar(select(User).where(User.email == "solo@example.com"))
+    assert solo.manager_id is None
+    # Nobody else is a candidate for matching a spoken name against.
+    assert [u.email for u in teammates(db, solo)] == ["solo@example.com"]
 
 
 def test_employee_manager_email_must_exist(anon_client) -> None:

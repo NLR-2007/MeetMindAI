@@ -21,6 +21,12 @@ from app.models import (
 from app.services.groq_client import GroqClient, GroqError
 from app.services.memory import get_memory_service
 from app.services.recall import RecallClient, latest_status
+from app.services.transcript_refine import align, whisper_prompt
+from app.services.transcript_repair import (
+    PRODUCT_TERMS,
+    build_vocabulary,
+    repair_transcript,
+)
 from app.services.transcripts import (
     ParsedTranscript,
     download_bytes,
@@ -136,6 +142,20 @@ async def process_completed_meeting(
     if url:
         raw = await download_transcript(url)
         parsed = parse_transcript(raw)
+        # Streaming STT is tuned for latency and mangles anything that is not
+        # plain English. Re-read the recording with Whisper and keep Recall's
+        # speakers. Best-effort: a failure here must never lose the transcript
+        # we already have.
+        if settings.refine_with_whisper:
+            try:
+                parsed, refined_count = await _refine_with_whisper(
+                    settings, bot, parsed
+                )
+                if refined_count:
+                    result["utterances_refined"] = refined_count
+                    source = "recallai_streaming+whisper"
+            except Exception:  # pragma: no cover - never fail the pipeline
+                logger.exception("Whisper refinement failed; keeping streaming text")
     else:
         # Whisper fallback: Recall produced no transcript, but audio exists.
         # This yields plain text only — no speaker names, no word timestamps.
@@ -155,8 +175,19 @@ async def process_completed_meeting(
     if transcript is None:
         transcript = Transcript(meeting_id=meeting.id)
         db.add(transcript)
+    # Names are what STT destroys most reliably, and a mangled name means a
+    # commitment lands on nobody. Deterministic, and only where it is sure.
+    known_names = [p.name for p in parsed.participants if p.name]
+    if meeting.project is not None:
+        known_names.append(meeting.project.name)
+    vocab = build_vocabulary(known_names)
+    repaired, repaired_lines = repair_transcript(parsed.plain_text, vocab)
+    if repaired_lines:
+        result["lines_name_repaired"] = repaired_lines
+        logger.info("Repaired names on %d transcript line(s)", repaired_lines)
+
     transcript.source = source
-    transcript.plain_text = parsed.plain_text
+    transcript.plain_text = repaired
     transcript.utterances = parsed.utterances
     transcript.word_count = parsed.word_count
     result["transcript_saved"] = True
@@ -397,6 +428,38 @@ def resolve_due_date(
     return parsed
 
 
+async def _refine_with_whisper(
+    settings: Settings, bot: dict[str, Any], parsed: ParsedTranscript
+) -> tuple[ParsedTranscript, int]:
+    """Replace streaming text with Whisper text, keeping Recall's speakers.
+
+    Returns the transcript unchanged when there is no audio, no Groq key, or
+    nothing aligned — the streaming transcript is always better than none.
+    """
+    if not settings.groq_api_key:
+        return parsed, 0
+    audio_url = find_audio_url(bot)
+    if not audio_url:
+        logger.info("No recording audio to refine from")
+        return parsed, 0
+
+    names = [p.name for p in parsed.participants if p.name]
+    prompt = whisper_prompt(names, PRODUCT_TERMS)
+
+    audio = await download_bytes(audio_url)
+    segments = await GroqClient(settings).transcribe_segments(audio, prompt=prompt)
+    if not segments:
+        return parsed, 0
+
+    utterances, rewritten = align(parsed.utterances, segments)
+    if not rewritten:
+        return parsed, 0
+
+    logger.info("Whisper refined %d of %d utterances", rewritten, len(utterances))
+    # Re-flatten so plain_text and utterances cannot disagree.
+    return parse_transcript(utterances), rewritten
+
+
 async def _whisper_fallback(
     settings: Settings, bot: dict[str, Any]
 ) -> tuple[ParsedTranscript, str] | None:
@@ -414,7 +477,9 @@ async def _whisper_fallback(
 
     try:
         audio = await download_bytes(audio_url)
-        text = await GroqClient(settings).transcribe_audio(audio)
+        text = await GroqClient(settings).transcribe_audio(
+            audio, prompt=whisper_prompt([], PRODUCT_TERMS)
+        )
     except (GroqError, ValueError, httpx.HTTPError) as exc:
         logger.error("Whisper fallback failed: %s", exc)
         return None

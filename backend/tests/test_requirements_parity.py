@@ -13,7 +13,11 @@ BACKEND = pathlib.Path(__file__).resolve().parent.parent
 # Deliberately absent from CI, with the reason recorded in requirements-ci.txt.
 CI_EXCLUDED = {"hindsight-all"}
 # Present only in CI, never needed at runtime.
-CI_ONLY = {"ruff"}
+CI_ONLY = {"ruff", "pytest", "pytest-asyncio", "respx"}
+# Production needs none of the test tooling, and adds Google ID token
+# verification for Firebase sign-in.
+PROD_EXCLUDED = {"hindsight-all", "pytest", "pytest-asyncio", "respx"}
+PROD_ONLY = {"google-auth"}
 
 
 def _pins(path: pathlib.Path) -> dict[str, str]:
@@ -61,3 +65,51 @@ def test_excluded_dependency_is_still_a_real_runtime_pin() -> None:
             f"{name} is excluded from CI but no longer appears in "
             "requirements.txt; update CI_EXCLUDED."
         )
+
+
+def test_prod_requirements_match_runtime_requirements() -> None:
+    """The image that actually ships must not drift from the real pins.
+
+    This file is what Cloud Run installs. Three dependencies - PyJWT,
+    passlib and bcrypt - were previously only present as transitive
+    dependencies of hindsight-all, which production excludes, so the image
+    would have come up unable to hash a password or sign a token.
+    """
+    runtime = _pins(BACKEND / "requirements.txt")
+    prod = _pins(BACKEND / "requirements-prod.txt")
+
+    missing = set(runtime) - set(prod) - PROD_EXCLUDED
+    assert not missing, (
+        "In requirements.txt but not requirements-prod.txt: "
+        + ", ".join(sorted(missing))
+    )
+
+    extra = set(prod) - set(runtime) - PROD_ONLY
+    assert not extra, (
+        "In requirements-prod.txt but not requirements.txt: "
+        + ", ".join(sorted(extra))
+    )
+
+    mismatched = {
+        name: (runtime[name], prod[name])
+        for name in set(runtime) & set(prod)
+        if runtime[name] != prod[name]
+    }
+    assert not mismatched, f"Version pins differ: {mismatched}"
+
+
+def test_authentication_dependencies_are_declared_not_transitive() -> None:
+    """The specific bug this guards against, named so it is not re-introduced.
+
+    These arrived only via hindsight-all. Any install without it - CI and the
+    production image both - had no `jwt`, `passlib` or `bcrypt`, so login
+    failed at runtime while every local test passed.
+    """
+    for filename in (
+        "requirements.txt",
+        "requirements-ci.txt",
+        "requirements-prod.txt",
+    ):
+        pins = _pins(BACKEND / filename)
+        for package in ("pyjwt", "passlib", "bcrypt", "email-validator"):
+            assert package in pins, f"{package} is not declared in {filename}"

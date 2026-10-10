@@ -214,3 +214,35 @@ def test_owner_can_accept_the_new_date(client, db, user) -> None:
     assert [f.kind for f in findings if f.kind == "silent_change"] == []
     # Still recorded as a change, just an accepted one.
     assert any(f.kind == "changed" for f in findings)
+
+
+def test_filtering_by_meeting_keeps_the_change_visible(db, user) -> None:
+    """A per-meeting view must not hide a silent change.
+
+    A change is a pair — the original from one meeting, the replacement from
+    another. Scoping on source_meeting_id alone dropped the original, so the
+    pair was never whole and the alert disappeared from the meeting filter on
+    My Promises and from a Co-Work board.
+    """
+    project = _project(db, user.id)
+    first = _meeting_with_deadline(
+        db, user.id, project.id, title="Kickoff", day=20,
+        transcript="Nimma: Compliance report on the twentieth.",
+    )
+    promisemirror.sync_meeting_commitments(db, first)
+    second = _meeting_with_deadline(
+        db, user.id, project.id, title="Weekly check-in", day=19,
+        transcript="Nimma: Compliance report on the nineteenth.",
+    )
+    promisemirror.sync_meeting_commitments(db, second)
+
+    scoped = promisemirror.analyse(
+        db, owner_user_id=user.id, meeting_id=second.id
+    )
+    assert [f.kind for f in scoped if f.kind == "silent_change"] == ["silent_change"]
+
+    # It shows against the earlier meeting too, and should: from the meeting
+    # where the date was agreed, "what we settled here has since moved" is
+    # exactly the thing worth knowing.
+    earlier = promisemirror.analyse(db, owner_user_id=user.id, meeting_id=first.id)
+    assert [f.kind for f in earlier if f.kind == "silent_change"] == ["silent_change"]

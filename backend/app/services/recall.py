@@ -33,6 +33,7 @@ class RecallClient:
     def __init__(self, settings: Settings) -> None:
         self._base = settings.recall_api_base
         self._language = settings.transcription_language
+        self._mode = settings.recall_transcript_mode
         self._headers = {
             # Recall uses token auth, not Bearer.
             "Authorization": f"Token {settings.recall_api_key}",
@@ -72,7 +73,7 @@ class RecallClient:
             recording_config["transcript"] = {
                 "provider": {
                     "recallai_streaming": {
-                        "mode": "prioritize_low_latency",
+                        "mode": self._mode,
                         "language_code": self._language,
                     }
                 }

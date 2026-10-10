@@ -2,6 +2,9 @@
   "name": "frontend",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "20"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -9,6 +12,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "firebase": "^12.19.0",
     "framer-motion": "^13.4.4",
     "lucide-react": "^1.48.0",
     "motion": "^13.4.4",

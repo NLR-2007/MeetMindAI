@@ -1,0 +1,9 @@
+{
+  "hosting": {
+    "target": "meetmind",
+    "source": "frontend",
+    "frameworksBackend": {
+      "region": "asia-south1"
+    }
+  }
+}

@@ -314,6 +314,20 @@ export default function ProgressPage() {
               <ul className="divide-y divide-[var(--border)]">
                 {data.alerts.slice(0, ALERTS_PREVIEW).map((a, i) => (
                   <li key={i} className="px-5 py-3">
+                    {/* This list spans every project, so each row names its
+                        own — the same pill My Promises uses, so the two
+                        views read alike. */}
+                    {a.project_name && (
+                      <span
+                        className="mb-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                        style={{
+                          background: "var(--accent-soft)",
+                          color: "var(--accent)",
+                        }}
+                      >
+                        {a.project_name}
+                      </span>
+                    )}
                     <p className="text-sm">{a.title}</p>
                     <p className="text-xs text-[var(--muted)]">{a.detail}</p>
                     {a.meeting_id && (

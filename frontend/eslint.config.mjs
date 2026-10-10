@@ -15,6 +15,9 @@ const eslintConfig = defineConfig([
     // Windows sometimes refuses to delete a locked .next, so the dev script
     // moves it aside. Those copies are build output, not source.
     ".next_*/**",
+    // distDir is overridable, so builds also land in .next-deploy and
+    // .next-run. All generated, none of it ours to lint.
+    ".next-*/**",
   ]),
 ]);
 

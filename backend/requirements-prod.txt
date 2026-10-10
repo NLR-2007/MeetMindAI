@@ -1,0 +1,38 @@
+# Production dependencies for the Cloud Run image.
+#
+# Identical pins to requirements.txt, minus hindsight-all. Hindsight pulls
+# torch and transformers and loads models for minutes at startup, which does
+# not fit Cloud Run's cold starts or image limits. In production the app runs
+# with MEMORY_BACKEND=mysql, or points HINDSIGHT_BASE_URL at a Hindsight
+# server running elsewhere — the app probes that URL before believing it, so
+# either arrangement reports the truth on /health.
+#
+# tests/test_requirements_parity.py fails if this drifts from requirements.txt.
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+httpx==0.28.1
+python-dotenv==1.0.1
+python-dateutil==2.9.0.post0
+
+# Database
+SQLAlchemy==2.0.36
+PyMySQL==1.1.1
+cryptography==44.0.0
+
+# Webhook signature verification
+svix==1.42.0
+
+# Authentication. These were previously only present as transitive
+# dependencies of hindsight-all, so any install without it - CI, and the
+# production image - came up with no way to hash a password or sign a token.
+PyJWT==2.15.0
+# pydantic's EmailStr needs this; it was transitive too.
+email-validator==2.3.0
+passlib==1.7.4
+bcrypt==4.0.1
+
+# Google ID token verification for Firebase Auth sign-in
+google-auth==2.38.0

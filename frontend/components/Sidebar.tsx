@@ -21,6 +21,7 @@ const NAV: NavItem[] = [
   { href: "/progress", label: "My Progress", hint: "Overview", tile: "var(--c-progress)", icon: "PG" },
   { href: "/inbox", label: "Priority Inbox", hint: "Client mail", tile: "var(--c-chat)", icon: "IN" },
   { href: "/teams", label: "My Team", hint: "One shared bot", tile: "var(--coral)", icon: "TM" },
+  { href: "/cowork", label: "Co-Work", hint: "Shared board", tile: "var(--c-progress)", icon: "CW" },
   { href: "/calendar", label: "Calendar", hint: "Schedule", tile: "var(--c-calendar)", icon: "CL" },
 ];
 

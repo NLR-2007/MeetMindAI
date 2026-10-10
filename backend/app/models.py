@@ -406,6 +406,190 @@ class InboundEmail(Base, TimestampMixin):
     owner: Mapped[User] = relationship()
 
 
+class CoWorkspace(Base, TimestampMixin):
+    """A space where a few people doing one piece of work can see each other.
+
+    Everywhere else in MeetMind, progress is private — a team shares a bot,
+    not a view of anyone's work. Co-Work is the deliberate exception, and it
+    is why it is a separate space with its own door: shared visibility is
+    opt-in, scoped to the people in this room, and only for the tasks put
+    here. Nothing from the rest of the product leaks in.
+
+    Its link does not admit anyone by itself. Following it raises a request
+    that the creator approves or rejects.
+    """
+
+    __tablename__ = "coworkspaces"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    purpose: Mapped[str | None] = mapped_column(Text)
+    # Co-Work sits under a team: the people in it are normally the ones who
+    # were in the meeting where the work was handed out.
+    team_id: Mapped[str | None] = mapped_column(
+        ForeignKey("teams.id", ondelete="SET NULL"), index=True
+    )
+    owner_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    # Distinct from the team invite: joining a team must never also join you
+    # to a space where your progress becomes visible.
+    join_token: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True
+    )
+    # The conversation this work came out of, so the board can show what was
+    # decided rather than just what was typed into it afterwards.
+    meeting_id: Mapped[str | None] = mapped_column(
+        ForeignKey("meetings.id", ondelete="SET NULL"), index=True
+    )
+
+    memberships: Mapped[list[CoWorkMembership]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    requests: Mapped[list[CoWorkJoinRequest]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    tasks: Mapped[list[CoWorkTask]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    deadline_requests: Mapped[list[CoWorkDeadlineChangeRequest]] = relationship(
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
+    team: Mapped[Team | None] = relationship()
+    meeting: Mapped[Meeting | None] = relationship()
+
+
+class CoWorkMembership(Base, TimestampMixin):
+    """Someone admitted to a Co-Work space."""
+
+    __tablename__ = "cowork_memberships"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "user_id", name="uq_cowork_member"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("coworkspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # "owner" decides who gets in; "member" does the work.
+    role: Mapped[str] = mapped_column(String(16), default="member", nullable=False)
+
+    workspace: Mapped[CoWorkspace] = relationship(back_populates="memberships")
+    user: Mapped[User] = relationship()
+
+
+class CoWorkJoinRequest(Base, TimestampMixin):
+    """A pending knock at the door.
+
+    The link gets you as far as asking. Because being admitted means your
+    progress becomes visible to the room, admission is a decision somebody
+    makes, not a side effect of having a URL.
+    """
+
+    __tablename__ = "cowork_join_requests"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "user_id", name="uq_cowork_request"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("coworkspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # pending | approved | rejected
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    workspace: Mapped[CoWorkspace] = relationship(back_populates="requests")
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+
+
+class CoWorkTask(Base, TimestampMixin):
+    """A piece of work with exactly one person answerable for it.
+
+    The rule that makes this trustworthy: only the assignee may say it is
+    done. A teammate marking your work complete, or a space owner closing
+    something on your behalf, would make the board a record of what people
+    assumed rather than what actually happened.
+    """
+
+    __tablename__ = "cowork_tasks"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("coworkspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text)
+    # Null means nobody has picked it up yet, which is visible on the board.
+    assignee_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    # todo | in_progress | done
+    status: Mapped[str] = mapped_column(String(16), default="todo", nullable=False)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Set when the task was lifted out of a meeting rather than typed in, so
+    # the board can show the line that was actually said.
+    source_meeting_id: Mapped[str | None] = mapped_column(
+        ForeignKey("meetings.id", ondelete="SET NULL"), index=True
+    )
+    spoken_owner: Mapped[str | None] = mapped_column(String(255))
+
+    workspace: Mapped[CoWorkspace] = relationship(back_populates="tasks")
+    assignee: Mapped[User | None] = relationship(foreign_keys=[assignee_id])
+    deadline_requests: Mapped[list[CoWorkDeadlineChangeRequest]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
+    )
+
+
+class CoWorkDeadlineChangeRequest(Base, TimestampMixin):
+    """A proposed deadline move waiting for the Co-Work Lead.
+
+    A shared board is useful only if dates cannot quietly slide. Members can
+    ask for a new due date, but the task's `due_at` changes only when the Lead
+    approves this request.
+    """
+
+    __tablename__ = "cowork_deadline_requests"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("coworkspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("cowork_tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    requester_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    current_due_at: Mapped[datetime | None] = mapped_column(DateTime)
+    requested_due_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    # pending | approved | rejected
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    workspace: Mapped[CoWorkspace] = relationship(back_populates="deadline_requests")
+    task: Mapped[CoWorkTask] = relationship(back_populates="deadline_requests")
+    requester: Mapped[User | None] = relationship(foreign_keys=[requester_id])
+
+
 class Memory(Base, TimestampMixin):
     """Backing table for MemoryService.
 

@@ -17,11 +17,32 @@ export function MemoryBadge() {
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [open, setOpen] = useState(false);
 
+  // Re-check rather than reading once on mount. Memory runs behind a tunnel
+  // that can drop and come back, and the API re-wires itself within seconds
+  // of it returning — so a badge that checked once would sit on a stale
+  // "unreachable" long after memory was working again, which is a more
+  // misleading thing to show than a brief wrong state.
   useEffect(() => {
-    memoryApi
-      .status()
-      .then(setStatus)
-      .catch(() => setStatus(null));
+    let cancelled = false;
+
+    async function check() {
+      const next = await memoryApi.status().catch(() => null);
+      if (!cancelled) setStatus(next);
+    }
+
+    void check();
+    const timer = window.setInterval(check, 30_000);
+    // Checking while the tab is hidden is wasted; catch up on return.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   if (!status) return null;

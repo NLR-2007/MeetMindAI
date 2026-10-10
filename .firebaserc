@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "sayvia-nlr-ai"
+  },
+  "targets": {
+    "sayvia-nlr-ai": {
+      "hosting": {
+        "meetmind": [
+          "meetmindnlr-ai"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

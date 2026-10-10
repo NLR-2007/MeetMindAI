@@ -12,6 +12,7 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.deps import current_user
 from app.models import Project, User
+from app.services.firebase_auth import FirebaseAuthError, verify_id_token
 from app.services.security import create_access_token, hash_password, verify_password
 
 logger = logging.getLogger(__name__)
@@ -23,17 +24,15 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=72)
     name: str | None = Field(default=None, max_length=255)
     role: str = Field(default="employee", pattern="^(employee|manager)$")
-    # Required for employees: it is what puts them on a team and what scopes
-    # commitment name-matching. Managers leave it empty.
+    # Optional. It scopes commitment name-matching to a reporting line, but
+    # Teams does that job now, and requiring it made the product impossible
+    # to start using: the first person to sign up has no manager to name, so
+    # registration was simply blocked on an empty database. Someone with no
+    # manager and no team sees only their own work, which is correct.
     manager_email: EmailStr | None = None
 
     @model_validator(mode="after")
-    def _employees_need_a_manager(self) -> RegisterRequest:
-        if self.role == "employee" and not self.manager_email:
-            raise ValueError(
-                "Employees must give their manager's email so their work is "
-                "mapped to the right team."
-            )
+    def _managers_do_not_report_to_anyone(self) -> RegisterRequest:
         if self.role == "manager" and self.manager_email:
             raise ValueError("Managers do not report to a manager in MeetMind.")
         return self
@@ -143,6 +142,74 @@ def login(
         )
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled.")
+    return _token(settings, user)
+
+
+class GoogleSignIn(BaseModel):
+    # The Firebase ID token the browser received after signing in with Google.
+    id_token: str = Field(min_length=20)
+    # Only used when creating an account, and only for employees.
+    manager_email: EmailStr | None = None
+
+
+@router.post("/google", response_model=TokenResponse)
+def google_sign_in(
+    payload: GoogleSignIn,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> TokenResponse:
+    """Sign in with Google, creating the account on first use.
+
+    The ID token is verified against Google's published keys, this Firebase
+    project's audience and issuer, and its expiry — never merely decoded.
+
+    A Google account has no password, so `password_hash` stays null and the
+    password login path refuses it: `verify_password` returns False for a
+    null hash, which means a Google-only account cannot be taken over by
+    guessing a password that does not exist.
+    """
+    try:
+        claims = verify_id_token(payload.id_token, settings.firebase_project_id or "")
+    except FirebaseAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)
+        ) from exc
+
+    email = str(claims["email"]).strip().lower()
+    user = db.scalar(select(User).where(User.email == email))
+
+    if user is None:
+        manager_id = None
+        if payload.manager_email:
+            manager = db.scalar(
+                select(User).where(User.email == str(payload.manager_email).lower())
+            )
+            if manager is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No MeetMind account for that manager email.",
+                )
+            manager_id = manager.id
+
+        name = claims.get("name") or email.split("@")[0]
+        user = User(
+            email=email,
+            name=name,
+            role="employee",
+            password_hash=None,
+            manager_id=manager_id,
+            # Seed the names transcripts will be matched against, so a
+            # commitment spoken aloud can find this person straight away.
+            display_names=[n for n in {name, email.split("@")[0]} if n],
+        )
+        db.add(user)
+        db.flush()
+        logger.info("Created account for %s via Google sign-in", email)
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled."
+        )
     return _token(settings, user)
 
 

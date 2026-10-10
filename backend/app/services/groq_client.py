@@ -219,15 +219,72 @@ class GroqClient:
         messages.append({"role": "user", "content": question})
         return await self._chat(messages, temperature=0.3)
 
-    async def transcribe_audio(self, audio: bytes, filename: str = "audio.mp3") -> str:
-        """Whisper fallback, used when Recall produced no transcript."""
+    async def transcribe_audio(
+        self,
+        audio: bytes,
+        filename: str = "audio.mp3",
+        *,
+        prompt: str | None = None,
+    ) -> str:
+        """Whisper fallback, used when Recall produced no transcript.
+
+        `prompt` seeds Whisper with names and terms it would otherwise guess
+        at — the single cheapest way to stop "Hindsight" coming back as
+        "insight".
+        """
+        data: dict[str, str] = {
+            "model": self._whisper_model,
+            "response_format": "json",
+        }
+        if prompt:
+            data["prompt"] = prompt[:880]
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.post(
                 f"{GROQ_BASE}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {self._key}"},
                 files={"file": (filename, audio, "application/octet-stream")},
-                data={"model": self._whisper_model, "response_format": "json"},
+                data=data,
             )
         if resp.status_code >= 400:
             raise GroqError(resp.status_code, resp.text[:500])
         return resp.json().get("text", "")
+
+    async def transcribe_segments(
+        self,
+        audio: bytes,
+        filename: str = "audio.mp3",
+        *,
+        prompt: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Timestamped segments from Whisper.
+
+        Whisper reads code-switched speech far better than streaming STT, but
+        it has no idea who is talking. Timestamps are what let its text be
+        matched back onto Recall's speaker-labelled utterances, so the
+        transcript ends up with Whisper's words and Recall's speakers.
+        """
+        data: dict[str, str] = {
+            "model": self._whisper_model,
+            "response_format": "verbose_json",
+        }
+        if prompt:
+            data["prompt"] = prompt[:880]
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.post(
+                f"{GROQ_BASE}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {self._key}"},
+                files={"file": (filename, audio, "application/octet-stream")},
+                data=data,
+            )
+        if resp.status_code >= 400:
+            raise GroqError(resp.status_code, resp.text[:500])
+        body = resp.json()
+        return [
+            {
+                "start": float(seg.get("start", 0.0)),
+                "end": float(seg.get("end", 0.0)),
+                "text": (seg.get("text") or "").strip(),
+            }
+            for seg in body.get("segments") or []
+            if (seg.get("text") or "").strip()
+        ]

@@ -254,6 +254,17 @@ export interface TeamMember {
 }
 
 export const authApi = {
+  // Hands a verified Google ID token to our API, which checks it against
+  // Google's keys and issues our own session token.
+  google: (idToken: string, managerEmail?: string) =>
+    request<TokenResponse>("/auth/google", {
+      method: "POST",
+      body: JSON.stringify({
+        id_token: idToken,
+        manager_email: managerEmail || null,
+      }),
+    }),
+
   register: (
     email: string,
     password: string,
@@ -706,6 +717,176 @@ export const inboxApi = {
       "/inbox/sync",
       { method: "POST" },
     ),
+};
+
+export interface CoWorkspace {
+  id: string;
+  name: string;
+  purpose: string | null;
+  team_id: string | null;
+  meeting_id: string | null;
+  meeting_title: string | null;
+  is_lead: boolean;
+  join_url: string | null;
+  member_count: number;
+  pending_requests: number;
+  progress: {
+    total: number;
+    done: number;
+    in_progress: number;
+    todo: number;
+    percent: number;
+  };
+}
+
+export interface CoWorkMember {
+  user_id: string;
+  name: string | null;
+  email: string;
+  role: string;
+  is_you: boolean;
+  total: number;
+  done: number;
+  percent: number;
+}
+
+export interface CoWorkTask {
+  id: string;
+  title: string;
+  detail: string | null;
+  status: "todo" | "in_progress" | "done";
+  assignee_id: string | null;
+  assignee_name: string | null;
+  due_at: string | null;
+  completed_at: string | null;
+  /** The backend's own answer, so the UI never offers a control it will refuse. */
+  can_update: boolean;
+  /** Nobody holds it, so anyone in the room may take it on. */
+  can_claim: boolean;
+  source_meeting_id: string | null;
+  spoken_owner: string | null;
+  overdue: boolean;
+  pending_deadline_request_id: string | null;
+}
+
+export interface CoWorkMeetingBrief {
+  meeting_id: string;
+  title: string;
+  summary: string | null;
+  decisions: string[];
+  deadlines: {
+    what: string;
+    due_at: string | null;
+    when_text: string | null;
+    on_calendar: boolean;
+  }[];
+  alerts: { kind: string; severity: string; title: string; detail: string }[];
+}
+
+export interface CoWorkRequest {
+  id: string;
+  user_id: string;
+  name: string | null;
+  email: string;
+  status: string;
+  note: string | null;
+  created_at: string;
+}
+
+export interface CoWorkDeadlineRequest {
+  id: string;
+  task_id: string;
+  task_title: string;
+  requester_id: string | null;
+  requester_name: string | null;
+  requester_email: string | null;
+  current_due_at: string | null;
+  requested_due_at: string;
+  reason: string | null;
+  status: string;
+  created_at: string;
+}
+
+export const coworkApi = {
+  list: () => request<CoWorkspace[]>("/cowork"),
+  create: (name: string, purpose?: string, teamId?: string) =>
+    request<CoWorkspace>("/cowork", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        purpose: purpose || null,
+        team_id: teamId || null,
+      }),
+    }),
+  members: (id: string) => request<CoWorkMember[]>(`/cowork/${id}/members`),
+  tasks: (id: string) => request<CoWorkTask[]>(`/cowork/${id}/tasks`),
+  addTask: (
+    id: string,
+    payload: { title: string; detail?: string; assignee_id?: string | null; due_at?: string | null },
+  ) =>
+    request<CoWorkTask>(`/cowork/${id}/tasks`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateTask: (
+    taskId: string,
+    payload: { status?: string; assignee_id?: string; title?: string },
+  ) =>
+    request<CoWorkTask>(`/cowork/tasks/${taskId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteTask: (taskId: string) =>
+    request<{ deleted: boolean }>(`/cowork/tasks/${taskId}`, { method: "DELETE" }),
+  importMeeting: (id: string, meetingId: string) =>
+    request<{
+      imported: number;
+      assigned: number;
+      unassigned: number;
+      with_dates: number;
+      meeting_title: string;
+    }>(`/cowork/${id}/import`, {
+      method: "POST",
+      body: JSON.stringify({ meeting_id: meetingId }),
+    }),
+  requests: (id: string) => request<CoWorkRequest[]>(`/cowork/${id}/requests`),
+  deadlineRequests: (id: string) =>
+    request<CoWorkDeadlineRequest[]>(`/cowork/${id}/deadline-requests`),
+  requestDeadlineChange: (
+    taskId: string,
+    payload: { requested_due_at: string; reason?: string | null },
+  ) =>
+    request<CoWorkDeadlineRequest>(`/cowork/tasks/${taskId}/deadline-requests`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  decideDeadlineRequest: (requestId: string, approve: boolean) =>
+    request<{ status: string; task_id: string; due_at: string | null }>(
+      `/cowork/deadline-requests/${requestId}/decide`,
+      {
+        method: "POST",
+        body: JSON.stringify({ approve }),
+      },
+    ),
+  meetingBriefs: (id: string) =>
+    request<CoWorkMeetingBrief[]>(`/cowork/${id}/meetings`),
+  decide: (requestId: string, approve: boolean) =>
+    request<{ status: string }>(`/cowork/requests/${requestId}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ approve }),
+    }),
+  askToJoin: (token: string, note?: string) =>
+    request<{
+      workspace_id: string | null;
+      name: string;
+      status: string;
+      message: string;
+    }>("/cowork/join", {
+      method: "POST",
+      body: JSON.stringify({ token, note: note || null }),
+    }),
+  leave: (id: string) =>
+    request<{ left: boolean }>(`/cowork/${id}/leave`, { method: "POST" }),
 };
 
 export const projectApi = {

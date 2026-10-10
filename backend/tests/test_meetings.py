@@ -105,8 +105,10 @@ def test_join_sends_documented_payload(client) -> None:
     assert payload["bot_name"] == "MeetMind AI Notetaker"
     # Exact field path from the Recall transcription docs.
     assert payload["recording_config"]["transcript"]["provider"]["recallai_streaming"] == {
-        # Live joins stream transcript in real time, so latency wins here.
-        "mode": "prioritize_low_latency",
+        # Accuracy, not latency. A garbled transcript poisons the summary,
+        # the commitments and the coaching that are all drawn from it, while
+        # the extra delay costs only Live Assist a little responsiveness.
+        "mode": "prioritize_accuracy",
         "language_code": "en",
     }
 
@@ -261,3 +263,31 @@ def test_process_without_transcript_is_graceful(client) -> None:
     result = client.post(f"/meetings/{meeting['id']}/process").json()
     assert result["transcript_saved"] is False
     assert "no transcript available" in result["skipped_reason"]
+
+
+@respx.mock
+def test_transcript_mode_is_configurable(client, monkeypatch) -> None:
+    """Latency can be bought back for a live demo without editing code."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "recall_transcript_mode", "prioritize_low_latency")
+
+    route = respx.post(f"{BASE}/api/v1/bot/").mock(
+        return_value=httpx.Response(
+            201,
+            json={
+                "id": "bot_mode",
+                "meeting_url": GOOD_URL,
+                "bot_name": "MeetMind AI Notetaker",
+                "status_changes": [{"code": "joining_call"}],
+            },
+        )
+    )
+    client.post(
+        "/meetings/join",
+        json={"meeting_url": GOOD_URL, "consent_acknowledged": True},
+    )
+    payload = json.loads(route.calls[0].request.content)
+    provider = payload["recording_config"]["transcript"]["provider"]
+    assert provider["recallai_streaming"]["mode"] == "prioritize_low_latency"

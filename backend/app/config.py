@@ -75,10 +75,25 @@ class Settings(BaseSettings):
     google_client_secret: str | None = None
     google_oauth_redirect_uri: str = "http://localhost:8000/calendar/oauth/callback"
 
+    # The Firebase project whose ID tokens this app accepts. Without it,
+    # Google sign-in is refused rather than accepting tokens from any
+    # Firebase project at all.
+    firebase_project_id: str | None = None
+
     bot_name: str = "MeetMind AI Notetaker"
     # Recall's "auto" detection can flip mid-meeting on accented English and
     # start emitting another script entirely. Pin the language instead.
     transcription_language: str = "en"
+    # prioritize_accuracy | prioritize_low_latency. Accuracy is the default:
+    # a garbled transcript poisons everything downstream - summaries, promises,
+    # coaching - while the extra delay only affects Live Assist.
+    recall_transcript_mode: str = "prioritize_accuracy"
+    # Re-transcribe the finished recording with Whisper and use it to repair
+    # the streaming text, keeping Recall's speaker labels. Whisper handles
+    # code-switched speech (English mixed with another language) far better
+    # than streaming STT, which renders the non-English parts as English-
+    # sounding nonsense.
+    refine_with_whisper: bool = True
     # Public base URL used to build webhook callbacks (ngrok in local dev).
     public_base_url: str | None = None
     cors_origins: str = "http://localhost:3000"

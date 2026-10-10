@@ -36,7 +36,7 @@ Everything below has been verified end to end against live services, not mocks.
 | Google Calendar — deadlines pushed as events | ✅ |
 | Whisper fallback when Recall produces no transcript | ⚠️ tested with mocks only |
 
-**164 backend tests pass.** `ruff` is clean, ESLint is clean, and the production build and `tsc --noEmit` both pass. CI runs all of this on every push (see `.github/workflows/ci.yml`).
+**337 backend tests pass.** `ruff` is clean, ESLint is clean, and the production build and `tsc --noEmit` both pass. CI runs all of this on every push (see `.github/workflows/ci.yml`).
 
 ---
 
@@ -500,8 +500,16 @@ committed. Real keys live in `.env`, which is gitignored.
 
 ## Known limitations
 
-- **Speech-to-text mangles product names and Indian names** — "Hindsight" →
-  "Insight", "Bunny" → "Pani". The mechanism is right; the transcription is not.
+- **Speech-to-text struggles with code-switched speech.** A call that mixes
+  English with another language comes back with the non-English stretches
+  rendered as English-sounding nonsense. Three things push back on this: the
+  bot records in Recall's `prioritize_accuracy` mode; the finished recording
+  is re-read with Whisper, whose text replaces the streaming text while
+  Recall's speaker labels are kept; and a deterministic pass repairs names
+  against the people who were actually in the room. What none of them can do
+  is recover words the microphone never captured — those are left as spoken
+  rather than guessed at, because a confidently wrong record of what somebody
+  said is worse than an obviously broken one.
 - **Speaker identity comes from the meeting platform's display name**, not
   voice. If your Meet name differs from your MeetMind aliases, attribution
   fails — deliberately, rather than guessing.

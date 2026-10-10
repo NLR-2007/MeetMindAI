@@ -1,0 +1,17 @@
+# Keep the build context small and secrets out of the image.
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Never copy real credentials into a container image.
+.env
+.env.*
+!.env.example
+
+tests/
+hindsight/
+*.md
+.pytest_cache/
+.ruff_cache/

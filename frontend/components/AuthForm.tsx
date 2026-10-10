@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ApiError, authApi, setToken } from "@/lib/api";
+import { googleSignInAvailable, signInWithGoogle } from "@/lib/firebase";
 import { ErrorBanner, Spinner } from "./ui";
 
 function Brand() {
@@ -22,13 +23,34 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
-  const [role, setRole] = useState<"employee" | "manager">("employee");
-  const [managerEmail, setManagerEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
 
   const register = mode === "register";
+
+  async function withGoogle() {
+    setBusy(true);
+    setError(null);
+    try {
+      const idToken = await signInWithGoogle();
+      // The manager is only needed when the account does not exist yet; the
+      // API ignores it for anyone already registered.
+      const res = await authApi.google(idToken);
+      setToken(res.access_token);
+      router.replace("/dashboard");
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Could not sign in with Google.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -36,13 +58,7 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
     setError(null);
     try {
       const res = register
-        ? await authApi.register(
-            email.trim(),
-            password,
-            name.trim(),
-            role,
-            role === "employee" ? managerEmail.trim() : undefined,
-          )
+        ? await authApi.register(email.trim(), password, name.trim())
         : await authApi.login(email.trim(), password);
       setToken(res.access_token);
       router.replace("/dashboard");
@@ -129,43 +145,6 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
                       <input id="full-name" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Bunny Reddy" autoComplete="name" className={field} />
                     </div>
 
-                    <fieldset>
-                      <legend className="mb-1.5 block text-xs font-bold text-[var(--muted-strong)]">I&apos;m joining as</legend>
-                      <div className="grid grid-cols-2 gap-2.5">
-                        {([
-                          ["employee", "Team member", "Track my work"],
-                          ["manager", "Manager", "Support my team"],
-                        ] as const).map(([value, label, hint]) => (
-                          <button
-                            key={value}
-                            type="button"
-                            onClick={() => setRole(value)}
-                            aria-pressed={role === value}
-                            className={`rounded-xl border px-3.5 py-3 text-left transition ${
-                              role === value
-                                ? "border-[var(--accent)] bg-[var(--accent-soft)] shadow-[0_0_0_1px_var(--accent)]"
-                                : "border-[var(--border)] bg-white hover:border-[#c9cddb]"
-                            }`}
-                          >
-                            <span className="block text-sm font-bold">{label}</span>
-                            <span className="mt-0.5 block text-[11px] text-[var(--muted)]">{hint}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </fieldset>
-
-                    {role === "employee" && (
-                      <div>
-                        <label htmlFor="manager-email" className="mb-1.5 block text-xs font-bold text-[var(--muted-strong)]">
-                          Manager&apos;s email <span style={{ color: "var(--danger)" }}>*</span>
-                        </label>
-                        <input id="manager-email" type="email" required value={managerEmail} onChange={(e) => setManagerEmail(e.target.value)} placeholder="manager@company.com" autoComplete="email" className={field} />
-                        <p className="mt-1.5 text-[11px] text-[var(--muted-strong)]">
-                          This puts you on their team and maps meeting commitments
-                          to you. They must already have a MeetMind account.
-                        </p>
-                      </div>
-                    )}
                   </>
                 )}
 
@@ -195,8 +174,7 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
                     busy ||
                     !email ||
                     password.length < 8 ||
-                    (register && !name.trim()) ||
-                    (register && role === "employee" && !managerEmail.trim())
+                    (register && !name.trim())
                   }
                   className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-3.5 text-sm font-bold text-white shadow-[0_16px_32px_-16px_rgb(99_91_255/.8)] transition hover:-translate-y-0.5 hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0"
                 >
@@ -204,6 +182,36 @@ export function AuthForm({ mode }: { mode: "login" | "register" }) {
                   {busy ? "Please wait…" : register ? "Create my account" : "Sign in to MeetMind"}
                 </button>
               </form>
+
+              {googleSignInAvailable && (
+                <>
+                  <div className="my-5 flex items-center gap-3">
+                    <span className="h-px flex-1 bg-[var(--border)]" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+                      or
+                    </span>
+                    <span className="h-px flex-1 bg-[var(--border)]" />
+                  </div>
+                  {/* Outside the form on purpose: this is not a submit, and
+                      pressing Enter in the password field must not trigger it. */}
+                  <button
+                    type="button"
+                    onClick={withGoogle}
+                    disabled={
+                      busy
+                    }
+                    className="inline-flex w-full items-center justify-center gap-2.5 rounded-xl border border-[var(--border)] bg-white px-4 py-3 text-sm font-semibold text-[var(--foreground)] transition hover:bg-[var(--surface-2)] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <svg aria-hidden viewBox="0 0 18 18" className="h-4 w-4">
+                      <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62Z" />
+                      <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18Z" />
+                      <path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33Z" />
+                      <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.9 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58Z" />
+                    </svg>
+                    Continue with Google
+                  </button>
+                </>
+              )}
 
               <p className="mt-6 text-center text-xs text-[var(--muted)]">
                 {register ? "Already have an account? " : "New to MeetMind? "}

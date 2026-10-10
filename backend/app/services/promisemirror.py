@@ -371,7 +371,21 @@ def analyse(
     if project_id:
         stmt = stmt.where(Commitment.project_id == project_id)
     if meeting_id:
-        stmt = stmt.where(Commitment.source_meeting_id == meeting_id)
+        # A change is a PAIR: the original from an earlier meeting and the
+        # replacement from this one. Filtering on source_meeting_id alone
+        # drops the original, so the pair is never whole and a silent date
+        # change vanishes from any per-meeting view. Pull in whatever this
+        # meeting superseded too. Those rows are "superseded", never
+        # "pending", so they contribute no other findings.
+        superseded_here = select(Commitment.id).where(
+            Commitment.source_meeting_id == meeting_id
+        )
+        stmt = stmt.where(
+            or_(
+                Commitment.source_meeting_id == meeting_id,
+                Commitment.superseded_by_id.in_(superseded_here),
+            )
+        )
     commitments = list(db.scalars(stmt.order_by(Commitment.created_at.asc())))
 
     findings: list[Finding] = []

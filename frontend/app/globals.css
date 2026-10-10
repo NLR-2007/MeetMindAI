@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@source not "../.next";
+@source not "../.next-deploy";
+@source not "../.next-run";
 
 :root {
   color-scheme: light;

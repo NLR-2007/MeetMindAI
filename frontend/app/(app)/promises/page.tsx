@@ -423,10 +423,28 @@ export default function PromisesPage() {
                   >
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <span
-                          className={`mb-1.5 inline-block rounded-full border px-2 py-0.5 text-[11px] font-medium ${SEVERITY[f.severity]}`}
-                        >
-                          {KIND_LABEL[f.kind] ?? f.kind}
+                        <span className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                          <span
+                            className={`inline-block rounded-full border px-2 py-0.5 text-[11px] font-medium ${SEVERITY[f.severity]}`}
+                          >
+                            {KIND_LABEL[f.kind] ?? f.kind}
+                          </span>
+                          {/* Repeated from the section heading on purpose: a
+                              card scrolled away from its heading, or shared on
+                              its own, still has to say which project it is. */}
+                          <span
+                            className="inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                            style={{
+                              background: f.project_name
+                                ? "var(--accent-soft)"
+                                : "var(--surface-2)",
+                              color: f.project_name
+                                ? "var(--accent)"
+                                : "var(--muted)",
+                            }}
+                          >
+                            {f.project_name ?? "No project"}
+                          </span>
                         </span>
                         <p className="text-sm font-medium">{f.title}</p>
                         <p className="mt-0.5 text-sm text-[var(--muted)]">{f.detail}</p>

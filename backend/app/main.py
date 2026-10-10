@@ -15,6 +15,7 @@ from app.routers import (
     auth,
     calendar,
     chat,
+    cowork,
     inbox,
     markup,
     meetings,
@@ -247,6 +248,7 @@ app.include_router(promisemirror.router)
 app.include_router(markup.router)
 app.include_router(teams.router)
 app.include_router(inbox.router)
+app.include_router(cowork.router)
 
 
 @app.get("/memory/status", tags=["system"])
