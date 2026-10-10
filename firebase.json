@@ -4,6 +4,17 @@
     "source": "frontend",
     "frameworksBackend": {
       "region": "asia-south1"
-    }
+    },
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Cross-Origin-Opener-Policy",
+            "value": "same-origin-allow-popups"
+          }
+        ]
+      }
+    ]
   }
 }
